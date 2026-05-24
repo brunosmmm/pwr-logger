@@ -1,28 +1,94 @@
 #include "ble_stream.h"
 
 #include <zephyr/kernel.h>
+#include <zephyr/bluetooth/bluetooth.h>
+#include <zephyr/bluetooth/gatt.h>
+#include <zephyr/bluetooth/uuid.h>
 #include <zephyr/logging/log.h>
+#include <string.h>
 
 LOG_MODULE_REGISTER(ble_stream, LOG_LEVEL_INF);
 
-/*
- * TODO:
- *  - bt_enable() and start connectable advertising.
- *  - Define a GATT service for the aggregated live view: decimated waveform
- *    preview + per-window RMS/avg/min/max + status, plus control/alarm chars
- *    (DATA_FORMAT.md section 7). Use 2M PHY + larger MTU for throughput.
- *  - OTA rides the same link via mcumgr SMP-over-BLE (enabled in prj.conf).
- */
+/* Custom service + telemetry (notify) characteristic. */
+#define PWR_SVC_UUID  BT_UUID_128_ENCODE(0xf0a00000, 0x1234, 0x5678, 0x9abc, 0xdef012345678)
+#define PWR_TELE_UUID BT_UUID_128_ENCODE(0xf0a00001, 0x1234, 0x5678, 0x9abc, 0xdef012345678)
+
+static const struct bt_uuid_128 svc_uuid = BT_UUID_INIT_128(PWR_SVC_UUID);
+static const struct bt_uuid_128 tele_uuid = BT_UUID_INIT_128(PWR_TELE_UUID);
+
+/* Wire format of one telemetry notification (little-endian, packed). */
+struct __packed pwr_telemetry {
+	uint64_t t_start;   /* master tick of the window start */
+	float    rms;       /* fast-channel RMS (raw code units for now) */
+	float    avg;
+	int16_t  min;
+	int16_t  max;
+	uint32_t n;
+};
+
+static volatile bool s_subscribed;
+static int64_t s_last_notify;
+
+static void ccc_changed(const struct bt_gatt_attr *attr, uint16_t value)
+{
+	ARG_UNUSED(attr);
+	s_subscribed = (value == BT_GATT_CCC_NOTIFY);
+	LOG_INF("telemetry notifications %s", s_subscribed ? "ON" : "OFF");
+}
+
+BT_GATT_SERVICE_DEFINE(pwr_svc,
+	BT_GATT_PRIMARY_SERVICE(&svc_uuid),
+	BT_GATT_CHARACTERISTIC(&tele_uuid.uuid, BT_GATT_CHRC_NOTIFY,
+			       BT_GATT_PERM_NONE, NULL, NULL, NULL),
+	BT_GATT_CCC(ccc_changed, BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
+);
+
+static const struct bt_data ad[] = {
+	BT_DATA_BYTES(BT_DATA_FLAGS, (BT_LE_AD_GENERAL | BT_LE_AD_NO_BREDR)),
+	BT_DATA(BT_DATA_NAME_COMPLETE, CONFIG_BT_DEVICE_NAME,
+		sizeof(CONFIG_BT_DEVICE_NAME) - 1),
+};
 
 int ble_stream_init(void)
 {
-	LOG_WRN("ble_stream_init: TODO bt_enable + GATT live-view service + adv");
+	int err = bt_enable(NULL);
+
+	if (err) {
+		LOG_ERR("bt_enable -> %d", err);
+		return err;
+	}
+	err = bt_le_adv_start(BT_LE_ADV_CONN_FAST_1, ad, ARRAY_SIZE(ad), NULL, 0);
+	if (err) {
+		LOG_ERR("adv start -> %d", err);
+		return err;
+	}
+	LOG_INF("BLE advertising as '%s'", CONFIG_BT_DEVICE_NAME);
 	return 0;
 }
 
 int ble_stream_publish(const struct agg_window *w)
 {
-	ARG_UNUSED(w);
-	/* TODO: notify subscribers with the window summary. */
+	if (!s_subscribed) {
+		return 0;
+	}
+	/* Throttle to ~20 Hz; the aggregator produces windows much faster. */
+	int64_t now = k_uptime_get();
+
+	if (now - s_last_notify < 50) {
+		return 0;
+	}
+	s_last_notify = now;
+
+	struct pwr_telemetry t = {
+		.t_start = w->t_start,
+		.rms = w->rms,
+		.avg = w->avg,
+		.min = w->min,
+		.max = w->max,
+		.n = w->n,
+	};
+
+	/* attrs[1] = characteristic value; ignore -ENOMEM (drop when buffers full). */
+	(void)bt_gatt_notify(NULL, &pwr_svc.attrs[1], &t, sizeof(t));
 	return 0;
 }
