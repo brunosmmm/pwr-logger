@@ -1,0 +1,17 @@
+# West manifest — workspace ("T2 star") application on UPSTREAM ZEPHYR.
+# Fully open source: no Nordic SoftDevice Controller blob. Zephyr's own
+# software BLE controller is used instead (see prj.conf: BT_LL_SW_SPLIT).
+#
+# Run once:  west init -l .   &&   west update
+# `import: true` pulls Zephyr + its modules (hal_nordic/nrfx, MCUboot, FatFs, ...).
+manifest:
+  remotes:
+    - name: zephyrproject
+      url-base: https://github.com/zephyrproject-rtos
+  projects:
+    - name: zephyr
+      remote: zephyrproject
+      revision: main          # pin to a release tag (e.g. v4.1.0) for reproducibility
+      import: true
+  self:
+    path: pwr-logger

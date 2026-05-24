@@ -1,0 +1,57 @@
+/*
+ * pwr-logger peripherals on the ProMicro nRF52840 (upstream board
+ * `promicro_nrf52840/nrf52840`).
+ *
+ * !!! PIN ASSIGNMENTS BELOW ARE PLACEHOLDERS !!!
+ * Set them per the wiring plan (the "Pinout / wiring plan" task). NRF_PSEL uses
+ * (port, pin); these are nRF GPIO numbers, not Pro Micro silk labels.
+ */
+
+/ {
+	zephyr,user {
+		/* INA228 conversion-ready -> GPIOTE -> PPI -> TIMER.CAPTURE.
+		 * Hardware-timestamps each slow conversion (DATA_FORMAT.md sect 1). */
+		cnvr-gpios = <&gpio0 11 (GPIO_ACTIVE_HIGH | GPIO_PULL_UP)>;
+	};
+};
+
+/* INA228 precision channel — I2C Fast-mode-plus. Address 0x40, driven manually
+ * in ina228.c (no DT binding dependency). */
+&i2c0 {
+	status = "okay";
+	clock-frequency = <I2C_BITRATE_FAST_PLUS>;	/* 1 MHz */
+};
+
+/* SAADC: nrfx-driven in acquisition.c. The INA240 output goes to an AINx pin
+ * (e.g. AIN0 = P0.02). No DT node needed; reserve the pin in the wiring plan. */
+
+/* SD card on SPIM3 (32 MHz capable; note nRF52840 anomaly 198 at high speed —
+ * start at 8 MHz, raise after bring-up). */
+&pinctrl {
+	spi3_default: spi3_default {
+		group1 {
+			psels = <NRF_PSEL(SPIM_SCK, 1, 13)>,
+				<NRF_PSEL(SPIM_MOSI, 1, 14)>,
+				<NRF_PSEL(SPIM_MISO, 1, 15)>;
+		};
+	};
+};
+
+&spi3 {
+	status = "okay";
+	pinctrl-0 = <&spi3_default>;
+	pinctrl-names = "default";
+	cs-gpios = <&gpio1 12 GPIO_ACTIVE_LOW>;
+
+	sdhc0: sdhc@0 {
+		compatible = "zephyr,sdhc-spi-slot";
+		reg = <0>;
+		status = "okay";
+		spi-max-frequency = <8000000>;
+		mmc {
+			compatible = "zephyr,sdmmc-disk";
+			disk-name = "SD";
+			status = "okay";
+		};
+	};
+};
