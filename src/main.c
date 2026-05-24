@@ -6,7 +6,6 @@
 #ifdef CONFIG_APP_BRINGUP
 #include "bringup.h"
 #else
-#include "storage.h"
 #include "acquisition.h"
 #include "ina228.h"
 #include "ble_stream.h"
@@ -25,9 +24,6 @@ int main(void)
 	/* Phase 0/1: hardware bring-up self-test (does not return). */
 	bringup_run();
 #else
-	if (storage_mount() != 0) {
-		LOG_ERR("SD mount failed; check card / wiring");
-	}
 	acq_init();
 	ina228_init();
 	ble_stream_init();

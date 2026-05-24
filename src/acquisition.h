@@ -24,4 +24,7 @@ int  acq_start(void);
 int  acq_stop(void);
 void acq_block_release(struct acq_block *blk);
 
+/* Cumulative count of dropped buffers (pool exhausted / queue full). */
+uint32_t acq_drops(void);
+
 #endif /* ACQUISITION_H_ */

@@ -24,11 +24,12 @@ static k_tid_t writer_tid;
 static struct storage_file s_file;
 static struct tdms_writer  s_tdms;
 static volatile bool s_running;
+static bool s_session; /* true = recording to SD; false = monitor-only */
 
 /*
- * Single writer thread: drains the fast and slow queues, encodes TDMS, writes to
- * SD, feeds the aggregator, and publishes the BLE live view. Acquisition never
- * touches the filesystem (REQUIREMENTS.md / IMPLEMENTATION.md task architecture).
+ * The contract: ALWAYS drain acq_msgq (feed the live view + return buffers to
+ * the pool); persisting to SD is conditional on a session being open. This keeps
+ * acquisition real-time-safe whether or not an SD card is present.
  */
 static void writer_fn(void *a, void *b, void *c)
 {
@@ -38,7 +39,9 @@ static void writer_fn(void *a, void *b, void *c)
 
 	struct ina228_sample slow[SLOW_BATCH_MAX];
 	int slow_n = 0;
-	int64_t last_flush = k_uptime_get();
+	uint64_t samples = 0;
+	int64_t t_report = k_uptime_get();
+	int64_t t_flush = t_report;
 
 	while (s_running) {
 		struct acq_block blk;
@@ -46,9 +49,12 @@ static void writer_fn(void *a, void *b, void *c)
 		if (k_msgq_get(&acq_msgq, &blk, K_MSEC(100)) == 0) {
 			uint64_t t = timebase_extend(blk.t_capture);
 
-			tdms_write_fast(&s_tdms, blk.samples, blk.count, t);
-			agg_push(blk.samples, blk.count);
-			acq_block_release(&blk);
+			agg_push(blk.samples, blk.count);           /* always */
+			if (s_session) {
+				tdms_write_fast(&s_tdms, blk.samples, blk.count, t);
+			}
+			samples += blk.count;
+			acq_block_release(&blk);                    /* always */
 		}
 
 		struct ina228_sample s;
@@ -58,12 +64,21 @@ static void writer_fn(void *a, void *b, void *c)
 			slow[slow_n++] = s;
 		}
 
-		if (slow_n > 0 &&
-		    (k_uptime_get() - last_flush) >= SLOW_FLUSH_INTERVAL_MS) {
+		int64_t now = k_uptime_get();
+
+		if (s_session && slow_n > 0 &&
+		    (now - t_flush) >= SLOW_FLUSH_INTERVAL_MS) {
 			tdms_write_slow(&s_tdms, slow, slow_n);
-			slow_n = 0;
-			last_flush = k_uptime_get();
 			storage_sync(&s_file);
+			slow_n = 0;
+			t_flush = now;
+		}
+
+		if (now - t_report >= 1000) {
+			LOG_INF("acq: %llu samples/s, %u drops [%s]", samples,
+				acq_drops(), s_session ? "logging" : "monitor");
+			samples = 0;
+			t_report = now;
 		}
 
 		struct agg_window w;
@@ -82,18 +97,15 @@ int logger_init(void)
 
 int logger_start(void)
 {
-	int rc;
-
-	/* TODO: rolling session filename (counter / RTC) per REQUIREMENTS.md 4. */
-	rc = storage_session_begin(&s_file, "log0001.tdms");
-	if (rc != 0) {
-		return rc;
-	}
-
-	rc = tdms_open(&s_tdms, &s_file);
-	if (rc != 0) {
-		storage_session_end(&s_file);
-		return rc;
+	/* SD session is OPTIONAL: with no card we still acquire (monitor mode). */
+	s_session = false;
+	if (storage_mount() == 0 &&
+	    storage_session_begin(&s_file, "log0001.tdms") == 0 &&
+	    tdms_open(&s_tdms, &s_file) == 0) {
+		s_session = true;
+		LOG_INF("recording to SD");
+	} else {
+		LOG_WRN("no SD session -> MONITOR mode (live view only)");
 	}
 
 	s_running = true;
@@ -105,7 +117,7 @@ int logger_start(void)
 
 	acq_start();
 	ina228_start();
-	LOG_INF("logging started");
+	LOG_INF("acquisition started");
 	return 0;
 }
 
@@ -119,9 +131,11 @@ int logger_stop(void)
 		k_thread_join(&writer_thread, K_FOREVER);
 		writer_tid = NULL;
 	}
-
-	tdms_close(&s_tdms);
-	storage_session_end(&s_file);
-	LOG_INF("logging stopped");
+	if (s_session) {
+		tdms_close(&s_tdms);
+		storage_session_end(&s_file);
+		s_session = false;
+	}
+	LOG_INF("acquisition stopped");
 	return 0;
 }
