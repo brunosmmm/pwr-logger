@@ -105,7 +105,8 @@ static void probe_saadc(void)
 
 	int code = (sample < 0) ? 0 : sample;
 	int mv = (int)((int32_t)code * 3600 / 4096);
-	float amps = (mv / 1000.0f) / (INA240_GAIN * INA240_SHUNT_OHMS);
+	float amps = ((mv / 1000.0f) - INA240_VREF_V) /
+		     (INA240_GAIN * INA240_SHUNT_OHMS);
 
 	LOG_INF("AIN7: code=%d  %d mV  (~%d mA on fast channel)", code, mv,
 		(int)(amps * 1000.0f));
