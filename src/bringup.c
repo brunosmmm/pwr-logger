@@ -8,6 +8,7 @@
 #include <zephyr/storage/disk_access.h>
 #include <zephyr/logging/log.h>
 
+#include <errno.h>
 #include <nrfx.h>
 #include <nrfx_saadc.h>
 
@@ -60,16 +61,22 @@ static void probe_sd(void)
 static int saadc_setup(void)
 {
 	nrfx_saadc_channel_t ch =
-		NRFX_SAADC_DEFAULT_CHANNEL_SE(NRF_SAADC_INPUT_AIN7, 0);
+		NRFX_SAADC_DEFAULT_CHANNEL_SE(NRFX_ANALOG_EXTERNAL_AIN7, 0);
+
+	int err;
 
 	/* INA240 0..3.3 V output -> 0..3.6 V FS (internal 0.6 V ref, gain 1/6). */
 	ch.channel_config.gain = NRF_SAADC_GAIN1_6;
 	ch.channel_config.reference = NRF_SAADC_REFERENCE_INTERNAL;
 
-	if (nrfx_saadc_init(NRFX_SAADC_DEFAULT_CONFIG_IRQ_PRIORITY) != 0) {
+	err = nrfx_saadc_init(NRFX_SAADC_DEFAULT_CONFIG_IRQ_PRIORITY);
+	if (err != 0 && err != -EALREADY) {
+		LOG_ERR("nrfx_saadc_init -> %d", err);
 		return -1;
 	}
-	if (nrfx_saadc_channel_config(&ch) != 0) {
+	err = nrfx_saadc_channel_config(&ch);
+	if (err != 0) {
+		LOG_ERR("nrfx_saadc_channel_config -> %d", err);
 		return -1;
 	}
 	return 0;
@@ -80,7 +87,10 @@ static void probe_saadc(void)
 	static nrf_saadc_value_t sample;
 
 	if (!saadc_ready) {
-		return;
+		saadc_ready = (saadc_setup() == 0); /* retry; logs the error code */
+		if (!saadc_ready) {
+			return;
+		}
 	}
 	if (nrfx_saadc_simple_mode_set(BIT(0), NRF_SAADC_RESOLUTION_12BIT,
 				       NRF_SAADC_OVERSAMPLE_DISABLED, NULL) != 0) {
