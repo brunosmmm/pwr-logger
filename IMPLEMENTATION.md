@@ -114,7 +114,7 @@ Supply+ --[INA240 1mOhm]--[INA228 2mOhm]-- Load+ ... Load- -- GND   (grounds com
 | SD MOSI | P1.02 | spi2 | |
 | SD MISO | P1.07 | spi2 | |
 | SD CS | P1.04 | GPIO | freed from i2c1; active-low |
-| INA240 OUT | P0.31 (AIN7) | SAADC | via RC anti-alias ~1k + ~1.8nF (~88 kHz) |
+| INA240 OUT | P0.31 (AIN7) | SAADC | via RC anti-alias 62 Ω + 33 nF (~78 kHz) |
 | status LED | P0.15 | led0 | UI / MCUboot LED |
 
 Front-end: INA240 A4 (×200) + 1 mΩ, REF = GND → 0.2 V/A, ~15 A FS, ~4.4 mA/LSB.

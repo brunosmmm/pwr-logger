@@ -15,6 +15,17 @@
 	};
 };
 
+/* P0.13 enables the board's external 3.3V rail (nice!nano-style power gate) --
+ * pulling it low cuts 3.3V to the INA228/INA240/SD. Hog it HIGH at boot and hold
+ * it there, so the rail stays on regardless of application code. */
+&gpio0 {
+	vcc3v3_enable_hog {
+		gpio-hog;
+		gpios = <13 GPIO_ACTIVE_HIGH>;
+		output-high;
+	};
+};
+
 /* Free P1.04 / P1.06 (the I2C1 default pins) for use as SD-CS and CNVR. */
 &i2c1 {
 	status = "disabled";
@@ -50,7 +61,7 @@
 };
 
 /*
- * SAADC fast channel: INA240 OUT -> RC anti-alias (~1k + ~1.8nF, ~88 kHz) ->
+ * SAADC fast channel: INA240 OUT -> RC anti-alias (62 ohm + 33 nF, ~78 kHz) ->
  * P0.31 = AIN7. Configured in acquisition.c via nrfx (no DT node needed; do NOT
  * also enable the Zephyr `adc` driver, or both would claim the SAADC).
  */
