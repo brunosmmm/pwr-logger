@@ -19,10 +19,15 @@
 
 /* ---- Front-end scaling: raw SAADC code -> amps -------------------------- */
 /*   I = ((code/2^bits)*Vfull - Vref) / (gain * shunt)                       */
-#define ADC_VFULL_SCALE_V        3.6f       /* internal 0.6V ref, gain 1/6     */
+/*   ~15 A full scale: 0.2 V/A -> ~4.4 mA/LSB at 12-bit.                      */
+#define ADC_VFULL_SCALE_V        3.6f       /* SAADC: internal 0.6V ref, gain 1/6 */
 #define ADC_BITS                 12u
-#define INA240_GAIN              50.0f      /* V/V (A2 variant)                */
-#define INA240_VREF_V            1.65f      /* output bias (bidir = VDD/2)     */
-#define SHUNT_OHMS               0.010f     /* sense resistor                  */
+#define INA240_GAIN              200.0f     /* V/V (A4 variant)                */
+#define INA240_VREF_V            0.0f       /* REF = GND (unidirectional)      */
+#define INA240_SHUNT_OHMS        0.001f     /* INA240 board shunt (0.1 -> 1 mOhm swap) */
+
+/* ---- INA228 precision channel ------------------------------------------- */
+#define INA228_SHUNT_OHMS        0.002f     /* INA228 board shunt               */
+#define INA228_IMAX_A            20.0f      /* expected max; sets CURRENT_LSB (hi-res) */
 
 #endif /* APP_CONFIG_H_ */

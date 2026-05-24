@@ -4,7 +4,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 
-LOG_MODULE_REGISTER(usb_msc, LOG_LEVEL_INF);
+LOG_MODULE_REGISTER(pwr_usb, LOG_LEVEL_INF);
 
 /*
  * The MSC disk is bound to the SD card via CONFIG_MASS_STORAGE_DISK_NAME="SD".

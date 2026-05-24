@@ -64,8 +64,9 @@ Two complementary sensors on the **same rail**:
 - **INA228** (20-bit ΔΣ) on the same rail provides lab-grade slow **V, I, P,
   energy, charge, temperature**. This is where bus voltage and accurate
   averages/energy integration come from (the INA240 is current-only).
-- I²C at Fast-mode-plus (1 MHz). Practical ceiling ~5–7 kSPS for V+I+P
-  (I²C readout overhead, not the chip's ~10 kSPS convert rate, is the limit).
+- I²C at 400 kHz (the nRF52840's max — it has no Fast-mode-plus). Practical
+  ceiling ~2–3 kSPS for V+I+P (I²C readout overhead, not the chip's ~10 kSPS
+  convert rate, is the limit). Ample — the INA228 runs slow/averaged anyway.
 - Use the conversion-ready (ALERT/CNVR) pin to pace reads.
 
 ### Future
@@ -80,7 +81,7 @@ Two complementary sensors on the **same rail**:
 | Path | Rate | Resolution | Notes |
 |---|---|---|---|
 | INA240 → SAADC (fast current) | **200 kSPS** | 12-bit raw, ~10 ENOB | Max rate ⟹ **no oversampling**. Oversampling for cleaner ~14-bit only at lower rates. |
-| INA228 → I²C (precision V/I/P) | ~5–7 kSPS | 20-bit ΔΣ | Slow, precise; energy/charge integration on-chip. |
+| INA228 → I²C (precision V/I/P) | ~2–3 kSPS (400 kHz I2C) | 20-bit ΔΣ | Slow, precise; energy/charge integration on-chip. |
 
 **Fast-channel data volume:** 200 kSPS × 2 B = **400 kB/s ≈ 3.2 Mbps**.
 
@@ -162,6 +163,9 @@ Two complementary sensors on the **same rail**:
 - **OTA firmware update:** MCUboot + **mcumgr SMP** over **BLE** (`mcumgr` CLI /
   Device Manager app), image written to the internal slot1 partition. Also over
   **USB** (mcumgr SMP / USB-DFU). The stock UF2 bootloader is replaced by MCUboot.
+- **SD-card firmware update:** drop a **signed `update.bin`** on the card; the app
+  stages it to slot1 and reboots, MCUboot swaps it in. App-level, no bootloader
+  changes. *Stretch:* FAT-aware MCUboot for app-less SD recovery (unbrickable).
 - **SD offload:**
   - *USB:* expose the card as **USB Mass Storage** (USB FS ≈ ~1 MB/s practical).
   - *Wireless:* pull files over BLE (slow), or just eject the card.

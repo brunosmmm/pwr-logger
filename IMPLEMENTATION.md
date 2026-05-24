@@ -97,6 +97,30 @@ CONFIG_MCUMGR_GRP_OS=y
 CONFIG_NORDIC_QSPI_NOR=y
 ```
 
+## Wiring / pin map (verified)
+
+Series load path, high-side, **INA228 nearest the load** (its VBUS = load voltage):
+
+```
+Supply+ --[INA240 1mOhm]--[INA228 2mOhm]-- Load+ ... Load- -- GND   (grounds common)
+```
+
+| Signal | nRF GPIO | Bus | Notes |
+|---|---|---|---|
+| INA228 SDA | P1.00 | i2c0 | 400 kHz (nRF52840 I2C max); ~2.2k pull-up (unless on breakout) |
+| INA228 SCL | P0.11 | i2c0 | ~2.2k pull-up |
+| INA228 CNVR | P1.06 | GPIO | i2c1 disabled to free it; open-drain, pull-up, active-low → GPIOTE/PPI |
+| SD SCK | P1.01 | spi2 | |
+| SD MOSI | P1.02 | spi2 | |
+| SD MISO | P1.07 | spi2 | |
+| SD CS | P1.04 | GPIO | freed from i2c1; active-low |
+| INA240 OUT | P0.31 (AIN7) | SAADC | via RC anti-alias ~1k + ~1.8nF (~88 kHz) |
+| status LED | P0.15 | led0 | UI / MCUboot LED |
+
+Front-end: INA240 A4 (×200) + 1 mΩ, REF = GND → 0.2 V/A, ~15 A FS, ~4.4 mA/LSB.
+INA228 2 mΩ → hi-res to ~20 A, ~39 µA, ±2.5 mA offset. Power off 3V3; decouple
+each IC; keep SD SPI edges away from the AIN trace. (Scaling in `app_config.h`.)
+
 ## Acquisition design (nrfx)
 
 - `nrfx_saadc`, 1 channel, 12-bit, `NRF_SAADC_ACQTIME_3US`. Reference/gain map the
@@ -127,8 +151,36 @@ CONFIG_NORDIC_QSPI_NOR=y
   approach it. If it overflows: override the layout in a DT overlay to **drop
   scratch** (swap-using-move needs none) and grow both slots to ~480 KB; trim
   features only as a last resort.
-- DFU transports: BLE SMP (`mcumgr` / Device Manager app) + USB.
+- DFU transports: BLE SMP (`mcumgr` / Device Manager app), USB, and **SD card**
+  (app-level, below).
 - Recovery: SWD reflash; MCUboot swap+revert covers bad OTA images.
+
+### Firmware update via SD card (app-level — no bootloader changes)
+
+A third update channel reusing the existing slot1 + MCUboot swap. The chip cannot
+*execute* from SD (it's a block device, not memory-mapped — XIP is QSPI-only,
+which this board lacks); instead the running app *installs* an image from SD into
+internal flash:
+
+1. At startup / on command, check the card for a signed `update.bin`.
+2. Stream it into **slot1** via `stream_flash` + `img_mgmt` — the app already has
+   FatFs and flash access (same machinery as BLE OTA).
+3. Mark the image pending; **reboot**.
+4. MCUboot validates the signature and swaps it in (swap+revert on failure).
+
+- **Image must be signed** — this is what makes installing card contents safe
+  (MCUboot signing, same keys as BLE OTA).
+- No conflict with logging: the SD check runs at boot/idle, never mid-log.
+- Restores UF2's "drop a file + power-cycle" convenience, but signed/validated.
+
+### Stretch goal: FAT-aware MCUboot (unbrickable)
+
+The app-level path can't recover a *wiped/corrupt* app (it can't run to read the
+card). To make the device recoverable from SD even with no valid app, give the
+**bootloader itself** an SD + FAT reader so MCUboot loads `update.bin` directly
+into a slot. Cost: a bigger bootloader (FAT + SD driver pushes MCUboot ~48 KB ->
+~80-96 KB, eating internal flash) and upstream MCUboot has no FAT loader out of
+the box (custom integration). Until then, **SWD is the recovery path**.
 
 ## Bring-up / debug
 
@@ -138,10 +190,15 @@ CONFIG_NORDIC_QSPI_NOR=y
   SWD for dev, mcumgr (BLE/USB) for OTA.
 - Logging/trace: **RTT** (`CONFIG_USE_SEGGER_RTT`) over the same SWD link.
 
-## Open / pending
+## Build status / open items
 
-- Pin assignments in the project overlay (`boards/promicro_nrf52840_nrf52840.overlay`):
-  SD on SPI (spi2 default, or add spi3 for 32 MHz), INA228 on I2C, SAADC AIN for
-  the INA240 output, GPIO for INA228 CNVR / control.
-- Which SWD probe (sets `--runner`).
-- Data record format + fast/slow timestamping (next design topic).
+- **Builds clean** with sysbuild on **upstream Zephyr 4.4** (MCUboot + signed app;
+  FLASH ~7.5%, RAM ~12%). Verified as a freestanding app against an existing
+  Zephyr workspace.
+- INA240 board: swap 0.1 Ω → 1 mΩ shunt (see `app_config.h`); confirm bus < 80 V CM.
+- SWD probe choice (sets `--runner`).
+- **Deferred for the OTA milestone:** re-enable mcumgr (needs zcbor / net_buf /
+  crc deps + handler registration); add USB-MSC via the **device_next** stack
+  (the legacy USB stack is deprecated and clashes with the board's CDC console).
+- nRF52840 I2C is **400 kHz max** (no Fast-mode-plus); MCUboot console routed to
+  uart0 via `sysbuild/mcuboot.overlay` (board default console is USB-CDC).

@@ -6,8 +6,8 @@ Voltage / current / power logger on the **ProMicro nRF52840**, built with **upst
 - **Precision** channel: INA228 over I²C (V / I / P / energy, hardware-timestamped).
 - **Storage**: full-rate logging to SD as **NI TDMS**.
 - **Live view**: aggregated stream over **BLE** (Zephyr's open SW controller — no blob).
-- **Service**: OTA (mcumgr over BLE/USB) and SD offload (USB-MSC), MCUboot
-  flashed over SWD in place of the stock UF2 bootloader.
+- **Service**: OTA (mcumgr over BLE/USB, or a signed image from the SD card) and
+  SD offload (USB-MSC), MCUboot flashed over SWD in place of the stock UF2 bootloader.
 
 Design rationale lives in **`REQUIREMENTS.md`**, **`IMPLEMENTATION.md`**, and
 **`DATA_FORMAT.md`** — read those first.
@@ -16,11 +16,11 @@ Design rationale lives in **`REQUIREMENTS.md`**, **`IMPLEMENTATION.md`**, and
 
 ⚠️ **Scaffold.** The structure, build files, devicetree overlay, and module
 decomposition are in place; the peripheral logic is stubbed (`TODO` markers point
-to the relevant design-doc sections). It has **not** been compiled here (no Zephyr
-toolchain on the authoring machine), so expect the first `west build` to surface
-Zephyr-version-specific Kconfig/DT adjustments — most likely in the SD/FS stack
-(`CONFIG_SDHC` / `CONFIG_SDMMC_STACK` / `CONFIG_DISK_DRIVER_SDMMC`) and the
-mcumgr/DFU symbols.
+to the relevant design-doc sections). It **builds clean** with sysbuild against
+upstream **Zephyr 4.4** (MCUboot + signed app; FLASH ~7%, RAM ~12%), verified on
+this machine — not yet exercised on hardware. Note: **mcumgr / BLE-OTA is
+deferred** in `prj.conf` (needs extra deps); the rest is enabled (open BLE
+controller, SD/exFAT, nrfx acquisition drivers).
 
 ⚠️ **Pin assignments in `boards/promicro_nrf52840_nrf52840.overlay` are
 placeholders** — set them per the wiring plan before building for hardware.
@@ -41,6 +41,12 @@ west update
 
 # build (note: the plain target, NOT .../uf2 — we replace UF2 with MCUboot)
 west build -b promicro_nrf52840/nrf52840 --sysbuild
+
+# alternatively, build against an EXISTING Zephyr workspace (no separate init) —
+# this is how it was verified (upstream Zephyr 4.4):
+#   cd <zephyr-workspace>
+#   west build -s <path-to-pwr-logger> -b promicro_nrf52840/nrf52840 \
+#       -d <path-to-pwr-logger>/build --sysbuild
 
 # first flash over SWD does a full erase, removing the stock UF2 bootloader:
 west flash --runner jlink        # or pyocd / openocd for CMSIS-DAP

@@ -1,0 +1,17 @@
+/*
+ * MCUboot image overlay.
+ *
+ * The board defaults its console to USB-CDC (cdc_acm_serial.dtsi), but MCUboot
+ * does not bring up the USB stack, so its console would reference a device that
+ * is never instantiated (link error: undefined __device_dts_ord_*). Point the
+ * bootloader console at the physical UART instead.
+ */
+/ {
+	chosen {
+		zephyr,console = &uart0;
+	};
+};
+
+&uart0 {
+	status = "okay";
+};

@@ -18,7 +18,7 @@ LOG_MODULE_REGISTER(tdms, LOG_LEVEL_INF);
  *     incl. NI linear-scale props and wf_start_time / wf_increment(=5e-6).
  *   - subsequent same-set segments: lead-in + raw data only (index "matches
  *     previous" = 0x00000000), so per-segment overhead is just 28 B.
- *   - slow segments (batched ~1x/s) carry the /'slow'/* channels incl. an
+ *   - slow segments (batched ~1x/s) carry the slow-group channels incl. an
  *     explicit NI-timestamp channel.
  *   - on a dropped fast buffer: write an EVENT + start a fresh waveform segment
  *     with a new wf_start_time.
