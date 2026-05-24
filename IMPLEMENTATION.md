@@ -192,13 +192,19 @@ the box (custom integration). Until then, **SWD is the recovery path**.
 
 ## Build status / open items
 
-- **Builds clean** with sysbuild on **upstream Zephyr 4.4** (MCUboot + signed app;
-  FLASH ~7.5%, RAM ~12%). Verified as a freestanding app against an existing
-  Zephyr workspace.
+- **Flashed and running on hardware** (2026-05-24): MCUboot at 0x0 boots the
+  signed app at slot0; the app runs (idle loop, RTT + USB-CDC up, P0.15 LED
+  blinks). Built freestanding against an existing upstream Zephyr 4.4 workspace.
+- **MCUboot partition fix:** the board globally chooses slot0 as code-partition,
+  which mis-linked MCUboot to 0xc000 (nothing at the reset vector → lockup).
+  Pinned to `boot_partition` (0x0) via `sysbuild/mcuboot.overlay`; the app image
+  stays at slot0 (0xc000).
+- **Flashing:** Raspberry Pi Debug Probe (CMSIS-DAP) → **OpenOCD**; use
+  `reset halt` (not bare `halt`) or the nrf5 flash loader times out on a sleeping
+  target. (pyocd skips the mcuboot hex / hangs — avoid it here.)
+- For standalone bring-up without MCUboot, build with `bringup.conf` (links at 0x0).
 - INA240 board: swap 0.1 Ω → 1 mΩ shunt (see `app_config.h`); confirm bus < 80 V CM.
-- SWD probe choice (sets `--runner`).
 - **Deferred for the OTA milestone:** re-enable mcumgr (needs zcbor / net_buf /
-  crc deps + handler registration); add USB-MSC via the **device_next** stack
-  (the legacy USB stack is deprecated and clashes with the board's CDC console).
-- nRF52840 I2C is **400 kHz max** (no Fast-mode-plus); MCUboot console routed to
-  uart0 via `sysbuild/mcuboot.overlay` (board default console is USB-CDC).
+  crc deps + handler registration); add USB-MSC via the **device_next** stack.
+- nRF52840 I2C is **400 kHz max** (no Fast-mode-plus); MCUboot console on uart0
+  via `sysbuild/mcuboot.overlay` (board default console is USB-CDC).

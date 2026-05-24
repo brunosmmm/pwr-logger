@@ -9,6 +9,11 @@
 / {
 	chosen {
 		zephyr,console = &uart0;
+		/* The board's nrf52840_partition.dtsi globally chooses slot0 as the
+		 * code-partition, which (wrongly) links MCUboot into slot0 (0xc000).
+		 * Pin the bootloader to boot_partition (0x0) so it owns the reset
+		 * vector. The app image keeps slot0. */
+		zephyr,code-partition = &boot_partition;
 	};
 };
 

@@ -53,10 +53,18 @@ openocd -f interface/cmsis-dap.cfg -f target/nrf52.cfg -c "adapter speed 4000" \
 Logs: `pyocd rtt -t nrf52840` (interactive terminal) or the USB-CDC console at
 `/dev/ttyACM*` (VID `2fe3`). The P0.15 LED blinks every 2 s.
 
-### Full firmware (MCUboot + signed app) — WIP
-`west build -b promicro_nrf52840/nrf52840 --sysbuild` builds, but the MCUboot
-image currently mis-links to 0xc000 instead of 0x0 (see IMPLEMENTATION "Build
-status"); being fixed before OTA works.
+### Full firmware (MCUboot + signed app) — boots
+`west build -b promicro_nrf52840/nrf52840 --sysbuild`. MCUboot is pinned to
+`boot_partition` (0x0) via `sysbuild/mcuboot.overlay`. Flash both images — use
+`reset halt` (not bare `halt`) or the flash loader times out on a sleeping target:
+```sh
+openocd -f interface/cmsis-dap.cfg -f target/nrf52.cfg -c "adapter speed 4000" \
+  -c init -c "reset halt" -c "nrf5 mass_erase" \
+  -c "flash write_image erase /tmp/pwrlog-build/mcuboot/zephyr/zephyr.hex" \
+  -c "flash write_image erase /tmp/pwrlog-build/pwr-logger/zephyr/zephyr.signed.hex" \
+  -c "reset run" -c shutdown
+```
+Verified: MCUboot boots the signed app (LED + RTT + USB-CDC up).
 
 SWD is on small pads (often the underside) — solder fly-leads.
 
