@@ -193,8 +193,27 @@ the box (custom integration). Until then, **SWD is the recovery path**.
 ## Build status / open items
 
 - **Flashed and running on hardware** (2026-05-24): MCUboot at 0x0 boots the
-  signed app at slot0; the app runs (idle loop, RTT + USB-CDC up, P0.15 LED
-  blinks). Built freestanding against an existing upstream Zephyr 4.4 workspace.
+  signed app at slot0. Built freestanding against an existing upstream Zephyr 4.4
+  workspace. The real pipeline builds with `-DCONFIG_APP_BRINGUP=n` (default is
+  the bring-up probe).
+
+### Firmware module status (hardware-verified unless noted)
+- ✅ **timebase** — TIMER2 free-running @ 1 MHz.
+- ✅ **acquisition** — nrfx SAADC advanced mode, AIN7, 200 kSPS, double-buffered;
+  measured **exactly 200000 samples/s, 0 drops**. Drop-on-overrun policy.
+- ✅ **INA228** — continuous V/I/P/temp; DIETEMP ~20 °C confirms live reads.
+- ✅ **BLE** — open SW controller, advertising as `pwr-logger`, GATT telemetry
+  notify characteristic (end-to-end notify test = phone).
+- ✅ **logger** — always-drain / conditional-persist contract; MONITOR mode runs
+  with no SD.
+- ⏳ **TDMS + SD logging** — gated on SD (`fs_mount -EIO`; SD parked till the end).
+- ⏳ **Gain calibration** — gated on a known load (SAADC offset cal done; INA228
+  is the in-series reference). Zero-offset capture pending.
+- ⏳ **PPI-capture timestamps** — deferred polish; ISR-read works (~µs jitter on
+  the per-buffer anchor). Needs the reworked nrfx GPPI API.
+- ⏳ **Mode state machine** (start/stop/offload) — needs a control input
+  (button / BLE command); MONITOR vs LOGGING auto-selected by SD presence today.
+- ⏳ **OTA (mcumgr)** — deferred (zcbor/net_buf/crc deps).
 - **MCUboot partition fix:** the board globally chooses slot0 as code-partition,
   which mis-linked MCUboot to 0xc000 (nothing at the reset vector → lockup).
   Pinned to `boot_partition` (0x0) via `sysbuild/mcuboot.overlay`; the app image
