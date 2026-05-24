@@ -34,27 +34,31 @@ release tag (e.g. v4.x). Fully open source — no Nordic SDK or blobs required.
 
 ## Build & flash
 
+Verified as a freestanding app against an existing upstream Zephyr 4.4 workspace.
+Probe: **Raspberry Pi Debug Probe (CMSIS-DAP) → OpenOCD** (the board's default
+`jlink` runner does not apply; `pyocd` has issues here — see memory notes).
+
+### Bring-up firmware (standalone, no bootloader) — boots today
 ```sh
-# one-time, if using this repo as a west workspace:
-west init -l .
-west update
+cd <zephyr-workspace>
+west build -s <pwr-logger> -b promicro_nrf52840/nrf52840 -d /tmp/pwrlog-bringup \
+    -p always -- -DEXTRA_CONF_FILE=bringup.conf            # links the app at 0x0
 
-# build (note: the plain target, NOT .../uf2 — we replace UF2 with MCUboot)
-west build -b promicro_nrf52840/nrf52840 --sysbuild
-
-# alternatively, build against an EXISTING Zephyr workspace (no separate init) —
-# this is how it was verified (upstream Zephyr 4.4):
-#   cd <zephyr-workspace>
-#   west build -s <path-to-pwr-logger> -b promicro_nrf52840/nrf52840 \
-#       -d <path-to-pwr-logger>/build --sysbuild
-
-# first flash over SWD does a full erase, removing the stock UF2 bootloader:
-west flash --runner jlink        # or pyocd / openocd for CMSIS-DAP
+openocd -f interface/cmsis-dap.cfg -f target/nrf52.cfg -c "adapter speed 4000" \
+  -c init -c halt -c "nrf5 mass_erase" \
+  -c "flash write_image erase /tmp/pwrlog-bringup/zephyr/zephyr.hex" \
+  -c "verify_image /tmp/pwrlog-bringup/zephyr/zephyr.hex" \
+  -c "reset run" -c shutdown
 ```
+Logs: `pyocd rtt -t nrf52840` (interactive terminal) or the USB-CDC console at
+`/dev/ttyACM*` (VID `2fe3`). The P0.15 LED blinks every 2 s.
 
-SWD is on small pads (often the underside) — solder fly-leads. A spare nRF52840
-DK works as a J-Link via its Debug-Out header. After this, dev = SWD, OTA =
-mcumgr over BLE/USB.
+### Full firmware (MCUboot + signed app) — WIP
+`west build -b promicro_nrf52840/nrf52840 --sysbuild` builds, but the MCUboot
+image currently mis-links to 0xc000 instead of 0x0 (see IMPLEMENTATION "Build
+status"); being fixed before OTA works.
+
+SWD is on small pads (often the underside) — solder fly-leads.
 
 ## Layout
 

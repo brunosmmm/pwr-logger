@@ -1,0 +1,16 @@
+# pwr-logger application Kconfig (root). Must source Kconfig.zephyr.
+
+menu "pwr-logger"
+
+config APP_BRINGUP
+	bool "Bring-up probe mode (LED heartbeat + I2C/SD/SAADC self-test)"
+	default y
+	help
+	  Phase 0/1 hardware bring-up: instead of the logging pipeline, run a
+	  heartbeat LED and periodically probe the INA228 (I2C), SD card, and
+	  SAADC (AIN7), logging results to the console. Use this to verify wiring
+	  one component at a time. Set to 'n' for the real logging firmware.
+
+endmenu
+
+source "Kconfig.zephyr"

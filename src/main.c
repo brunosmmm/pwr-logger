@@ -2,28 +2,29 @@
 #include <zephyr/logging/log.h>
 
 #include "timebase.h"
+
+#ifdef CONFIG_APP_BRINGUP
+#include "bringup.h"
+#else
 #include "storage.h"
 #include "acquisition.h"
 #include "ina228.h"
 #include "ble_stream.h"
 #include "usb_msc.h"
 #include "logger.h"
+#endif
 
 LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
 
-enum app_mode {
-	MODE_IDLE,
-	MODE_LOGGING,
-	MODE_OFFLOAD,
-};
-
 int main(void)
 {
-	static enum app_mode mode = MODE_IDLE;
-
 	LOG_INF("pwr-logger starting");
-
 	timebase_init();
+
+#ifdef CONFIG_APP_BRINGUP
+	/* Phase 0/1: hardware bring-up self-test (does not return). */
+	bringup_run();
+#else
 	if (storage_mount() != 0) {
 		LOG_ERR("SD mount failed; check card / wiring");
 	}
@@ -33,14 +34,13 @@ int main(void)
 	usb_storage_init();
 	logger_init();
 
-	/* TODO: real mode state machine driven by button / BLE command / USB
-	 * attach. LOGGING and OFFLOAD are mutually exclusive at the FS level. */
-	mode = MODE_LOGGING;
+	/* TODO: real mode state machine (button / BLE command / USB attach);
+	 * LOGGING and OFFLOAD are mutually exclusive at the FS level. */
 	logger_start();
-	LOG_INF("mode = %d", (int)mode);
 
 	while (1) {
 		k_sleep(K_SECONDS(1));
 	}
+#endif
 	return 0;
 }
