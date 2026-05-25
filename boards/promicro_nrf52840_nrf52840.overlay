@@ -65,6 +65,11 @@
  * ~8 MHz ~= 1 MB/s, 2.5x the 400 kB/s need. CS = P1.04 (freed from I2C1).
  * For more headroom (multichannel) later, move SD to SPIM3 @ 32 MHz. */
 &spi2 {
+	/* The board defaults spi2 to the legacy byte-IRQ "nordic,nrf-spi" driver,
+	 * which fires one interrupt per byte -> at ~390 kB/s of TDMS writes the SPI
+	 * ISR starves every other thread. Use SPIM (EasyDMA): one DMA transfer per
+	 * buffer. SPIM2 is free (I2C uses TWIM0); 8 MHz max, 64 kB max-count. */
+	compatible = "nordic,nrf-spim";
 	status = "okay";
 	cs-gpios = <&gpio1 4 (GPIO_ACTIVE_LOW | NRF_GPIO_DRIVE_H0H1 | GPIO_PULL_UP)>;
 
