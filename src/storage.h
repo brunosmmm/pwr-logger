@@ -18,7 +18,7 @@ struct storage_file {
 int storage_mount(void);
 int storage_unmount(void);
 
-int storage_session_begin(struct storage_file *f, const char *name);
+int storage_session_begin(struct storage_file *f); /* opens a fresh logNNNN.tdms */
 int storage_write(struct storage_file *f, const void *buf, size_t len);
 int storage_sync(struct storage_file *f);
 int storage_session_end(struct storage_file *f);

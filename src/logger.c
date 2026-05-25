@@ -100,7 +100,7 @@ int logger_start(void)
 	/* SD session is OPTIONAL: with no card we still acquire (monitor mode). */
 	s_session = false;
 	if (storage_mount() == 0 &&
-	    storage_session_begin(&s_file, "log0001.tdms") == 0 &&
+	    storage_session_begin(&s_file) == 0 &&
 	    tdms_open(&s_tdms, &s_file) == 0) {
 		s_session = true;
 		LOG_INF("recording to SD");

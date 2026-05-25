@@ -78,12 +78,23 @@ int storage_unmount(void)
 	return fs_unmount(&mp);
 }
 
-int storage_session_begin(struct storage_file *f, const char *name)
+int storage_session_begin(struct storage_file *f)
 {
 	char path[80];
+	struct fs_dirent ent;
+	unsigned int idx;
 
-	snprintf(path, sizeof(path), "%s/%s", MOUNT_POINT, name);
 	fs_file_t_init(&f->fp);
+
+	/* Open a FRESH logNNNN.tdms each session: reusing one name without
+	 * truncating let a short session leave a longer prior session's stale
+	 * segments past its end, which corrupts the file for TDMS readers. */
+	for (idx = 1U; idx < 10000U; idx++) {
+		snprintf(path, sizeof(path), "%s/log%04u.tdms", MOUNT_POINT, idx);
+		if (fs_stat(path, &ent) != 0) {
+			break;   /* first non-existent name -> use it */
+		}
+	}
 
 	int rc = fs_open(&f->fp, path, FS_O_CREATE | FS_O_WRITE);
 
@@ -92,7 +103,7 @@ int storage_session_begin(struct storage_file *f, const char *name)
 		return rc;
 	}
 	wbuf_len = 0;
-	LOG_INF("session file open: %s", path);
+	LOG_INF("session file: %s", path);
 	return 0;
 }
 
