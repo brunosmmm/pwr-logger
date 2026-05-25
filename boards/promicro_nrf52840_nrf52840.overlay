@@ -7,6 +7,9 @@
  *   (all grounds common: supply-, both breakouts, MCU, load return)
  */
 
+#include <zephyr/dt-bindings/pinctrl/nrf-pinctrl.h>
+#include <zephyr/dt-bindings/gpio/nordic-nrf-gpio.h>
+
 / {
 	zephyr,user {
 		/* INA228 CNVR/ALERT (open-drain, active-low) -> GPIOTE -> PPI ->
@@ -40,12 +43,30 @@
 	clock-frequency = <I2C_BITRATE_FAST>;	/* 400 kHz — nRF52840 I2C max */
 };
 
+/* Level shifter/buffer removed -> the MCU drives the SD lines directly.
+ * group1 = outputs (SCK/MOSI) at H0H1 high drive (max for nRF52840); the
+ * default S0S1 gives weak edges into the card's pin load. group2 = MISO, the
+ * card->MCU input, with the nRF internal pull-up (~13k) enabled so the line
+ * isn't left floating between the card's drive phases. (No pull-up on SCK: it
+ * would fight the CPOL=0 idle-low.) */
+&spi2_default {
+	group1 {
+		psels = <NRF_PSEL(SPIM_SCK, 1, 1)>,
+			<NRF_PSEL(SPIM_MOSI, 1, 2)>;
+		nordic,drive-mode = <NRF_DRIVE_H0H1>;
+	};
+	group2 {
+		psels = <NRF_PSEL(SPIM_MISO, 1, 7)>;
+		bias-pull-up;
+	};
+};
+
 /* SD card on SPIM2 (board default pins: SCK P1.01, MOSI P1.02, MISO P1.07).
  * ~8 MHz ~= 1 MB/s, 2.5x the 400 kB/s need. CS = P1.04 (freed from I2C1).
  * For more headroom (multichannel) later, move SD to SPIM3 @ 32 MHz. */
 &spi2 {
 	status = "okay";
-	cs-gpios = <&gpio1 4 GPIO_ACTIVE_LOW>;
+	cs-gpios = <&gpio1 4 (GPIO_ACTIVE_LOW | NRF_GPIO_DRIVE_H0H1 | GPIO_PULL_UP)>;
 
 	sdhc0: sdhc@0 {
 		compatible = "zephyr,sdhc-spi-slot";
