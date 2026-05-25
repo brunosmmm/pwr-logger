@@ -10,5 +10,6 @@
 int logger_init(void);
 int logger_start(void);  /* open session file, start acquisition, run writer */
 int logger_stop(void);
+int logger_rotate(void); /* close current file + open a fresh one, mid-stream */
 
 #endif /* LOGGER_H_ */

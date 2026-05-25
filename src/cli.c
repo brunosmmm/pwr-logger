@@ -1,5 +1,6 @@
 #include "config.h"
 #include "clock.h"
+#include "logctl.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -35,8 +36,57 @@ static int cmd_status(const struct shell *sh, size_t argc, char **argv)
 	} else {
 		strcpy(b, "(unset)");
 	}
+	shell_print(sh, "state:  %s", logctl_state_name(logctl_state()));
 	shell_print(sh, "time:   %s (synced=%d)", b, clk_is_synced());
 	shell_print(sh, "uptime: %lld ms", k_uptime_get());
+	return 0;
+}
+
+static int cmd_log(const struct shell *sh, size_t argc, char **argv)
+{
+	ARG_UNUSED(argc); ARG_UNUSED(argv);
+	logctl_post(EV_LOG_START);
+	shell_print(sh, "logging");
+	return 0;
+}
+
+static int cmd_stop(const struct shell *sh, size_t argc, char **argv)
+{
+	ARG_UNUSED(argc); ARG_UNUSED(argv);
+	logctl_post(EV_LOG_STOP);
+	shell_print(sh, "stopped");
+	return 0;
+}
+
+static int cmd_rotate(const struct shell *sh, size_t argc, char **argv)
+{
+	ARG_UNUSED(argc); ARG_UNUSED(argv);
+	logctl_post(EV_ROTATE);
+	shell_print(sh, "rotate requested");
+	return 0;
+}
+
+static int cmd_offload(const struct shell *sh, size_t argc, char **argv)
+{
+	ARG_UNUSED(argc); ARG_UNUSED(argv);
+	logctl_post(EV_OFFLOAD_ON);
+	shell_print(sh, "offload: stopping + releasing SD; mount the USB drive, then 'pwr resume'");
+	return 0;
+}
+
+static int cmd_resume(const struct shell *sh, size_t argc, char **argv)
+{
+	ARG_UNUSED(argc); ARG_UNUSED(argv);
+	logctl_post(EV_OFFLOAD_OFF);
+	shell_print(sh, "resuming logging (unmount the USB drive on the host first)");
+	return 0;
+}
+
+static int cmd_poweroff(const struct shell *sh, size_t argc, char **argv)
+{
+	ARG_UNUSED(argc); ARG_UNUSED(argv);
+	logctl_post(EV_POWEROFF);
+	shell_print(sh, "powering off");
 	return 0;
 }
 
@@ -125,9 +175,15 @@ SHELL_STATIC_SUBCMD_SET_CREATE(cfg_sub,
 	SHELL_SUBCMD_SET_END);
 
 SHELL_STATIC_SUBCMD_SET_CREATE(pwr_sub,
-	SHELL_CMD(status, NULL, "device status", cmd_status),
-	SHELL_CMD(time,   &time_sub, "time get/set", NULL),
-	SHELL_CMD(config, &cfg_sub,  "config get/set/list", NULL),
+	SHELL_CMD(status,   NULL, "device status", cmd_status),
+	SHELL_CMD(log,      NULL, "start logging", cmd_log),
+	SHELL_CMD(stop,     NULL, "stop logging", cmd_stop),
+	SHELL_CMD(rotate,   NULL, "cut a new session file", cmd_rotate),
+	SHELL_CMD(offload,  NULL, "stop + expose SD as USB drive", cmd_offload),
+	SHELL_CMD(resume,   NULL, "leave offload, resume logging", cmd_resume),
+	SHELL_CMD(poweroff, NULL, "clean stop + power off", cmd_poweroff),
+	SHELL_CMD(time,     &time_sub, "time get/set", NULL),
+	SHELL_CMD(config,   &cfg_sub,  "config get/set/list", NULL),
 	SHELL_SUBCMD_SET_END);
 
 SHELL_CMD_REGISTER(pwr, &pwr_sub, "pwr-logger control", NULL);

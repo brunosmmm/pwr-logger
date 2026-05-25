@@ -24,6 +24,7 @@ static k_tid_t writer_tid;
 static struct storage_file s_file;
 static struct tdms_writer  s_tdms;
 static volatile bool s_running;
+static volatile bool s_rotate; /* writer cuts a fresh file at the next boundary */
 static bool s_session; /* true = recording to SD; false = monitor-only */
 
 /* Fast-channel (INA240 -> SAADC) code->amps, same scaling as tdms.c. */
@@ -105,6 +106,22 @@ static void writer_fn(void *a, void *b, void *c)
 				nerr++;
 			}
 		}
+
+		/* Seamless rotate: close + reopen at a buffer boundary. Acquisition
+		 * keeps filling acq_msgq (the ~660 ms buffer slack covers it). */
+		if (s_rotate && s_session) {
+			storage_sync(&s_file);
+			tdms_close(&s_tdms);
+			storage_session_end(&s_file);
+			if (storage_session_begin(&s_file) == 0 &&
+			    tdms_open(&s_tdms, &s_file) == 0) {
+				LOG_INF("rotated to new session file");
+			} else {
+				LOG_ERR("rotate failed -> session ended");
+				s_session = false;
+			}
+			s_rotate = false;
+		}
 	}
 }
 
@@ -137,6 +154,14 @@ int logger_start(void)
 	acq_start();
 	ina228_start();
 	LOG_INF("acquisition started");
+	return 0;
+}
+
+int logger_rotate(void)
+{
+	if (s_session) {
+		s_rotate = true;
+	}
 	return 0;
 }
 

@@ -1,5 +1,6 @@
 #include "usb_msc.h"
 #include "storage.h"
+#include "logctl.h"
 
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
@@ -97,15 +98,11 @@ int usb_storage_init(void)
 
 int usb_offload_enter(void)
 {
-	/* TODO (increment 2): logger_stop(); storage_unmount(); so the host can
-	 * safely own the block device. For now logging is not started. */
-	LOG_INF("usb_offload_enter (stub)");
-	return 0;
+	/* The actual stop+unmount sequencing lives in logctl (single mode owner). */
+	return logctl_post(EV_OFFLOAD_ON);
 }
 
 int usb_offload_exit(void)
 {
-	/* TODO (increment 2): storage_mount(); resume logging. */
-	LOG_INF("usb_offload_exit (stub)");
-	return 0;
+	return logctl_post(EV_OFFLOAD_OFF);
 }

@@ -16,6 +16,7 @@ enum file_fmt_kind     { FILE_FMT_UTC = 0,      FILE_FMT_INDEX = 1 };
 
 struct app_cfg {
 	uint8_t  version;
+	bool     autostart;        /* begin logging automatically at boot            */
 	bool     autooff_en;       /* dark-idle inactivity -> System OFF             */
 	uint32_t autooff_s;        /* inactivity timeout (s) before auto-off         */
 	bool     idle_ble;         /* keep BLE advertising in idle (connectable idle)*/

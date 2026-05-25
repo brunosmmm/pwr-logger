@@ -10,7 +10,7 @@
 
 LOG_MODULE_REGISTER(config, LOG_LEVEL_INF);
 
-#define CFG_VERSION 1
+#define CFG_VERSION 2
 #define CFG_KEY     "pwr/cfg"
 #define CFG_BLOB    CFG_KEY "/blob"
 
@@ -28,6 +28,7 @@ struct cfg_item {
 #define ITEM(k, t, field, d) { k, t, offsetof(struct app_cfg, field), d }
 
 static const struct cfg_item items[] = {
+	ITEM("autostart",       T_BOOL, autostart,       1),
 	ITEM("autooff_en",      T_BOOL, autooff_en,      0),
 	ITEM("autooff_s",       T_U32,  autooff_s,       1800),
 	ITEM("idle_ble",        T_BOOL, idle_ble,        0),

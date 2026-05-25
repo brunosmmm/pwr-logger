@@ -18,6 +18,7 @@ target_sources(app PRIVATE
     src/config.c
     src/clock.c
     src/cli.c
+    src/logctl.c
 )
 
 target_include_directories(app PRIVATE src)

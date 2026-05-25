@@ -11,6 +11,7 @@
 #include "ble_stream.h"
 #include "usb_msc.h"
 #include "logger.h"
+#include "logctl.h"
 #include "config.h"
 #include "clock.h"
 #endif
@@ -39,9 +40,10 @@ int main(void)
 	usb_storage_init();
 	logger_init();
 
-	/* TODO: real mode state machine (button / BLE command / USB attach);
-	 * LOGGING and OFFLOAD are mutually exclusive at the FS level. */
-	logger_start();
+	/* logctl owns the mode (logging / offload / ship), driven by the console,
+	 * BLE, buttons/switch and USB/battery events. It seeds the initial mode
+	 * from config (autostart) here. */
+	logctl_init();
 
 	while (1) {
 		k_sleep(K_SECONDS(1));
