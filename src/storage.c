@@ -1,7 +1,10 @@
 #include "storage.h"
+#include "clock.h"
+#include "config.h"
 
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 #include <zephyr/fs/fs.h>
 #include <ff.h>
 #include <zephyr/logging/log.h>
@@ -78,22 +81,53 @@ int storage_unmount(void)
 	return fs_unmount(&mp);
 }
 
+/* Lowest-free logNNNN.tdms fallback (no wall clock, or file_fmt = index). */
+static void name_indexed(char *path, size_t cap)
+{
+	struct fs_dirent ent;
+
+	for (unsigned int idx = 1U; idx < 10000U; idx++) {
+		snprintf(path, cap, "%s/log%04u.tdms", MOUNT_POINT, idx);
+		if (fs_stat(path, &ent) != 0) {
+			return;   /* first non-existent name -> use it */
+		}
+	}
+}
+
 int storage_session_begin(struct storage_file *f)
 {
 	char path[80];
 	struct fs_dirent ent;
-	unsigned int idx;
+	bool named = false;
 
 	fs_file_t_init(&f->fp);
 
-	/* Open a FRESH logNNNN.tdms each session: reusing one name without
-	 * truncating let a short session leave a longer prior session's stale
-	 * segments past its end, which corrupts the file for TDMS readers. */
-	for (idx = 1U; idx < 10000U; idx++) {
-		snprintf(path, sizeof(path), "%s/log%04u.tdms", MOUNT_POINT, idx);
+	/* A FRESH file each session (reusing a name without truncating leaves a
+	 * longer prior session's stale tail, which corrupts TDMS readers). Prefer
+	 * a UTC timestamp name (sortable == chronological; FAT-legal, colon-free);
+	 * fall back to logNNNN when there's no wall clock or file_fmt = index. */
+	if (config_get()->file_fmt == FILE_FMT_UTC && clk_has_time()) {
+		time_t t = clk_now();
+		struct tm tm;
+		char base[24];
+
+		gmtime_r(&t, &tm);
+		snprintf(base, sizeof(base), "%04d%02d%02dT%02d%02d%02dZ",
+			 tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
+			 tm.tm_hour, tm.tm_min, tm.tm_sec);
+		snprintf(path, sizeof(path), "%s/%s.tdms", MOUNT_POINT, base);
 		if (fs_stat(path, &ent) != 0) {
-			break;   /* first non-existent name -> use it */
+			named = true;
+		} else {
+			for (unsigned int k = 1; k < 100 && !named; k++) {
+				snprintf(path, sizeof(path), "%s/%s_%02u.tdms",
+					 MOUNT_POINT, base, k);
+				named = (fs_stat(path, &ent) != 0);
+			}
 		}
+	}
+	if (!named) {
+		name_indexed(path, sizeof(path));
 	}
 
 	int rc = fs_open(&f->fp, path, FS_O_CREATE | FS_O_WRITE);
