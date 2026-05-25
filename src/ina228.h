@@ -15,7 +15,8 @@ struct ina228_sample {
 	uint32_t t_capture;  /* raw 32-bit master tick at CNVR */
 	int32_t  vbus_raw;   /* 24-bit, sign-extended */
 	int32_t  vshunt_raw; /* 24-bit, sign-extended */
-	int32_t  power_raw;  /* 24-bit */
+	int32_t  current_raw;/* CURRENT register, 24-bit sign-extended */
+	int32_t  power_raw;  /* POWER register, 24-bit unsigned */
 	int16_t  temp_raw;   /* DIETEMP */
 };
 

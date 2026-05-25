@@ -44,7 +44,7 @@ LOG_MODULE_REGISTER(tdms, LOG_LEVEL_INF);
 #define TDMS_SLOW_MAX  32u   /* max slow records per segment (logger batches <=16) */
 
 /* one NI timestamp (16 B) + i32 vbus/vshunt/power + i16 temp, per record */
-#define SLOW_REC_BYTES (16u + 4u + 4u + 4u + 2u)
+#define SLOW_REC_BYTES (16u + 4u + 4u + 4u + 4u + 2u) /* t,vbus,vshunt,current,power,temp */
 
 static uint8_t s_meta[1024];
 static uint8_t s_slow[TDMS_SLOW_MAX * SLOW_REC_BYTES];
@@ -240,6 +240,13 @@ static void slow_channels(struct buf *b, size_t n, bool with_props)
 		p_str(b, "unit_string", "V_raw");
 	}
 
+	b_str(b, "/'slow'/'current'");
+	b_raw_index(b, TDS_I32, n);
+	b_u32(b, with_props ? 1 : 0);
+	if (with_props) {
+		p_str(b, "unit_string", "A_raw");
+	}
+
 	b_str(b, "/'slow'/'power'");
 	b_raw_index(b, TDS_I32, n);
 	b_u32(b, with_props ? 1 : 0);
@@ -259,7 +266,7 @@ static size_t meta_slow(uint8_t *out, size_t cap, size_t n, bool full)
 {
 	struct buf b = { out, cap, 0, false };
 
-	b_u32(&b, full ? 6 : 5);   /* group + 5 channels, or 5 channels on re-list */
+	b_u32(&b, full ? 7 : 6);   /* group + 6 channels, or 6 channels on re-list */
 	if (full) {
 		b_str(&b, "/'slow'");
 		b_u32(&b, NO_RAW_DATA);
@@ -287,6 +294,9 @@ static size_t slow_raw(uint8_t *out, size_t cap, const struct ina228_sample *s, 
 	}
 	for (size_t i = 0; i < n; i++) {
 		b_u32(&b, (uint32_t)s[i].vshunt_raw);
+	}
+	for (size_t i = 0; i < n; i++) {
+		b_u32(&b, (uint32_t)s[i].current_raw);
 	}
 	for (size_t i = 0; i < n; i++) {
 		b_u32(&b, (uint32_t)s[i].power_raw);

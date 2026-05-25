@@ -92,7 +92,8 @@ static void rd_fn(void *a, void *b, void *c)
 			.t_capture = timebase_now32(),
 			.vbus_raw = read_20in24(REG_VBUS, false),
 			.vshunt_raw = read_20in24(REG_VSHUNT, true),
-			.power_raw = read_20in24(REG_CURRENT, true), /* store current here */
+			.current_raw = read_20in24(REG_CURRENT, true),
+			.power_raw = (int32_t)read_24(REG_POWER),
 		};
 
 		(void)reg_read(REG_DIETEMP, tb, 2);
@@ -103,11 +104,10 @@ static void rd_fn(void *a, void *b, void *c)
 		int64_t now = k_uptime_get();
 
 		if (now - t_log >= 1000) {
-			uint32_t pwr_reg = read_24(REG_POWER);                  /* POWER reg */
 			int vbus_uv = (int)(s.vbus_raw * VBUS_LSB_UV);          /* µV */
-			int i_ua = (int)(s.power_raw * s_current_lsb * 1e6f);   /* µA */
+			int i_ua = (int)(s.current_raw * s_current_lsb * 1e6f); /* µA */
 			/* INA228 POWER LSB = 3.2 * CURRENT_LSB */
-			int p_uw = (int)(pwr_reg * 3.2f * s_current_lsb * 1e6f); /* µW */
+			int p_uw = (int)(s.power_raw * 3.2f * s_current_lsb * 1e6f); /* µW */
 			int t_mc = (int)(s.temp_raw * TEMP_LSB_mC);             /* m°C */
 
 			LOG_INF("INA228: Vbus=%d uV  I=%d uA  P=%d uW  T=%d mC",
