@@ -16,8 +16,8 @@
 /* master ticks per output sample (= 50) */
 #define ACQ_SAMPLE_PERIOD_TICKS  (MASTER_CLOCK_HZ / ACQ_SAMPLE_RATE_HZ)
 
-#define ACQ_BUF_SAMPLES          8192u      /* int16 per DMA buffer; at 20 kSPS */
-#define ACQ_BUF_COUNT            8u         /* = ~410 ms each, ~3.3 s of pool   */
+#define ACQ_BUF_SAMPLES          1024u      /* int16 per DMA buffer; at 20 kSPS  */
+#define ACQ_BUF_COUNT            16u        /* = ~51 ms each; ~660 ms eff. slack */
 
 /* ---- Slow precision channel (INA228) ------------------------------------ */
 #define SLOW_FLUSH_INTERVAL_MS   1000u      /* batch slow records into a TDMS  */
