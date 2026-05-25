@@ -1,4 +1,7 @@
 #include "ble_stream.h"
+#include "logctl.h"
+#include "clock.h"
+#include "power.h"
 
 #include <zephyr/kernel.h>
 #include <zephyr/bluetooth/bluetooth.h>
@@ -7,15 +10,27 @@
 #include <zephyr/bluetooth/uuid.h>
 #include <zephyr/logging/log.h>
 #include <string.h>
+#include <time.h>
 
 LOG_MODULE_REGISTER(ble_stream, LOG_LEVEL_INF);
 
-/* Custom service + telemetry (notify) characteristic. */
+/* Custom service: telemetry (notify) + control (write) characteristics. */
 #define PWR_SVC_UUID  BT_UUID_128_ENCODE(0xf0a00000, 0x1234, 0x5678, 0x9abc, 0xdef012345678)
 #define PWR_TELE_UUID BT_UUID_128_ENCODE(0xf0a00001, 0x1234, 0x5678, 0x9abc, 0xdef012345678)
+#define PWR_CTRL_UUID BT_UUID_128_ENCODE(0xf0a00002, 0x1234, 0x5678, 0x9abc, 0xdef012345678)
 
 static const struct bt_uuid_128 svc_uuid = BT_UUID_INIT_128(PWR_SVC_UUID);
 static const struct bt_uuid_128 tele_uuid = BT_UUID_INIT_128(PWR_TELE_UUID);
+static const struct bt_uuid_128 ctrl_uuid = BT_UUID_INIT_128(PWR_CTRL_UUID);
+
+/* Control opcodes (1-byte op [+ payload]) written to the control characteristic. */
+#define PWR_OP_LOG      0x01
+#define PWR_OP_STOP     0x02
+#define PWR_OP_ROTATE   0x03
+#define PWR_OP_OFFLOAD  0x04
+#define PWR_OP_RESUME   0x05
+#define PWR_OP_POWEROFF 0x06
+#define PWR_OP_SETTIME  0x10   /* + u32 LE unix epoch */
 
 /* Wire format of one telemetry notification (little-endian, packed). */
 struct __packed pwr_telemetry {
@@ -25,6 +40,8 @@ struct __packed pwr_telemetry {
 	int16_t  min;
 	int16_t  max;
 	uint32_t n;
+	uint16_t batt_mv;   /* VDDH (battery), cached */
+	uint8_t  state;     /* enum logctl_state */
 };
 
 static volatile bool s_subscribed;
@@ -37,11 +54,53 @@ static void ccc_changed(const struct bt_gatt_attr *attr, uint16_t value)
 	LOG_INF("telemetry notifications %s", s_subscribed ? "ON" : "OFF");
 }
 
+/* Control characteristic write: 1-byte opcode (+ payload) -> a logctl event or
+ * a time sync. Mirrors the console `pwr` commands. */
+static ssize_t ctrl_write(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+			  const void *buf, uint16_t len, uint16_t offset, uint8_t flags)
+{
+	const uint8_t *p = buf;
+
+	ARG_UNUSED(conn);
+	ARG_UNUSED(attr);
+	ARG_UNUSED(flags);
+	if (offset != 0) {
+		return BT_GATT_ERR(BT_ATT_ERR_INVALID_OFFSET);
+	}
+	if (len < 1) {
+		return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
+	}
+
+	switch (p[0]) {
+	case PWR_OP_LOG:      logctl_post(EV_LOG_START);   break;
+	case PWR_OP_STOP:     logctl_post(EV_LOG_STOP);    break;
+	case PWR_OP_ROTATE:   logctl_post(EV_ROTATE);      break;
+	case PWR_OP_OFFLOAD:  logctl_post(EV_OFFLOAD_ON);  break;
+	case PWR_OP_RESUME:   logctl_post(EV_OFFLOAD_OFF); break;
+	case PWR_OP_POWEROFF: logctl_post(EV_POWEROFF);    break;
+	case PWR_OP_SETTIME:
+		if (len >= 5) {
+			uint32_t epoch;
+
+			memcpy(&epoch, p + 1, sizeof(epoch));   /* LE */
+			clk_set((time_t)epoch);
+		}
+		break;
+	default:
+		LOG_WRN("ble ctrl: unknown opcode 0x%02x", p[0]);
+		break;
+	}
+	return len;
+}
+
 BT_GATT_SERVICE_DEFINE(pwr_svc,
 	BT_GATT_PRIMARY_SERVICE(&svc_uuid),
 	BT_GATT_CHARACTERISTIC(&tele_uuid.uuid, BT_GATT_CHRC_NOTIFY,
 			       BT_GATT_PERM_NONE, NULL, NULL, NULL),
 	BT_GATT_CCC(ccc_changed, BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
+	BT_GATT_CHARACTERISTIC(&ctrl_uuid.uuid,
+			       BT_GATT_CHRC_WRITE | BT_GATT_CHRC_WRITE_WITHOUT_RESP,
+			       BT_GATT_PERM_WRITE, NULL, ctrl_write, NULL),
 );
 
 static const struct bt_data ad[] = {
@@ -140,6 +199,7 @@ int ble_stream_publish(const struct agg_window *w)
 	}
 	s_last_notify = now;
 
+	int batt = power_batt_mv();
 	struct pwr_telemetry t = {
 		.t_start = w->t_start,
 		.rms = w->rms,
@@ -147,6 +207,8 @@ int ble_stream_publish(const struct agg_window *w)
 		.min = w->min,
 		.max = w->max,
 		.n = w->n,
+		.batt_mv = (batt > 0) ? (uint16_t)batt : 0,
+		.state = (uint8_t)logctl_state(),
 	};
 
 	/* attrs[1] = characteristic value. Returns -ENOMEM when TX buffers are full. */

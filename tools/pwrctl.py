@@ -21,6 +21,7 @@ import argparse
 import re
 import sys
 import time
+from enum import IntEnum
 
 from rich.console import Console
 from rich.panel import Panel
@@ -36,8 +37,39 @@ ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 SLOPE = 3.6 / (2 ** 14 * 200 * 0.001)      # 0.0010986 A/code
 INTER = -1.6622 / (200 * 0.001)            # -8.311 A (calibrated VREF)
 TELE_UUID = "f0a00001-1234-5678-9abc-def012345678"
+CTRL_UUID = "f0a00002-1234-5678-9abc-def012345678"
 
-STATE_COLOR = {"logging": "green", "stopped": "yellow", "offload": "cyan", "ship": "red"}
+
+class Op(IntEnum):
+    """Control opcodes written to the control characteristic (match ble_stream.c).
+    Member names are the CLI command names, upper-cased."""
+    LOG = 0x01
+    STOP = 0x02
+    ROTATE = 0x03
+    OFFLOAD = 0x04
+    RESUME = 0x05
+    POWEROFF = 0x06
+    SETTIME = 0x10
+
+
+class State(IntEnum):
+    """Device mode (matches enum logctl_state)."""
+    STOPPED = 0
+    LOGGING = 1
+    OFFLOAD = 2
+    SHIP = 3
+
+    @property
+    def color(self):
+        return {State.LOGGING: "green", State.STOPPED: "yellow",
+                State.OFFLOAD: "cyan", State.SHIP: "red"}[self]
+
+    @classmethod
+    def color_for(cls, name):
+        try:
+            return cls[name.upper()].color
+        except KeyError:
+            return "white"
 
 
 # --------------------------------------------------------------------------- #
@@ -110,7 +142,7 @@ def parse_kv(lines):
 def cmd_status(dev):
     info = parse_kv(dev.cmd("pwr status"))
     state = info.get("state", "?")
-    color = STATE_COLOR.get(state, "white")
+    color = State.color_for(state)
     body = (f"[bold {color}]{state.upper()}[/]\n\n"
             f"time:   {info.get('time', '?')}\n"
             f"uptime: {info.get('uptime', '?')}")
@@ -182,6 +214,14 @@ def cmd_monitor():
         t.add_row("avg code", f"{latest['avg']:.1f}")
         t.add_row("samples/window", str(latest["n"]))
         t.add_row("rate", f"{latest.get('hz', 0):.1f} Hz")
+        if "state" in latest:
+            try:
+                s = State(latest["state"])
+                name, col = s.name.lower(), s.color
+            except ValueError:
+                name, col = "?", "white"
+            t.add_row("state", f"[{col}]{name}[/]")
+            t.add_row("battery", f"{latest['batt'] / 1000:.3f} V" if latest["batt"] else "—")
         return t
 
     async def run():
@@ -206,6 +246,9 @@ def cmd_monitor():
             del times[:-20]
             hz = (len(times) - 1) / (times[-1] - times[0]) if len(times) > 1 else 0.0
             latest.update(avg=avg, mn=mn, mx=mx, n=n, rms=rms, hz=hz)
+            if len(d) >= 27:   # extended: + u16 batt_mv, u8 state
+                batt, state = struct.unpack("<HB", d[24:27])
+                latest.update(batt=batt, state=state)
 
         async with BleakClient(dev) as c:
             await c.start_notify(TELE_UUID, cb)
@@ -220,9 +263,16 @@ def cmd_monitor():
                     await asyncio.sleep(0.5)
                     if latest:
                         cur = SLOPE * latest["avg"] + INTER
+                        extra = ""
+                        if "state" in latest:
+                            try:
+                                extra = (f"  {State(latest['state']).name.lower()}"
+                                         f"  {latest['batt'] / 1000:.2f}V")
+                            except ValueError:
+                                pass
                         console.print(f"I={cur * 1000:7.1f} mA  min/max code="
                                       f"{latest['mn']}/{latest['mx']}  n={latest['n']}  "
-                                      f"{latest.get('hz', 0):.1f} Hz")
+                                      f"{latest.get('hz', 0):.1f} Hz{extra}")
 
     try:
         asyncio.run(run())
@@ -231,9 +281,47 @@ def cmd_monitor():
 
 
 # --------------------------------------------------------------------------- #
+# BLE control transport (write the control characteristic)
+# --------------------------------------------------------------------------- #
+def ble_send(payload):
+    import asyncio
+    from bleak import BleakClient, BleakScanner
+
+    async def run():
+        dev = await BleakScanner.find_device_by_filter(
+            lambda d, adv: adv.local_name == "pwr-logger", timeout=15.0)
+        if not dev:
+            console.print("[red]pwr-logger not found over BLE[/]")
+            return False
+        async with BleakClient(dev) as c:
+            await c.write_gatt_char(CTRL_UUID, payload, response=False)
+        return True
+
+    return asyncio.run(run())
+
+
+def ble_dispatch(a):
+    import struct
+
+    op = Op.__members__.get(a.cmd.upper())   # control commands map 1:1 to opcodes
+    if op is not None and op is not Op.SETTIME:
+        if ble_send(bytes([op])):
+            console.print(f"[green]✓[/] {a.cmd} (BLE)")
+    elif a.cmd == "time" and a.action == "set":
+        epoch = int(time.time()) if a.value in (None, "now") else int(a.value, 0)
+        if ble_send(bytes([Op.SETTIME]) + struct.pack("<I", epoch)):
+            console.print(f"[green]✓[/] time set {epoch} (BLE)")
+    else:
+        console.print(f"[yellow]'{a.cmd}' isn't available over BLE — use serial, "
+                      f"or 'pwrctl monitor' for live state/battery.[/]")
+
+
+# --------------------------------------------------------------------------- #
 def main():
     ap = argparse.ArgumentParser(prog="pwrctl", description="pwr-logger host CLI")
     ap.add_argument("--port", help="serial port (default: auto-detect 2fe3:0006)")
+    ap.add_argument("--ble", action="store_true",
+                    help="send control commands over BLE instead of serial")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("status")
@@ -252,6 +340,9 @@ def main():
 
     if a.cmd == "monitor":
         cmd_monitor()
+        return
+    if a.ble:
+        ble_dispatch(a)
         return
     dev = open_device(a.port)
     if a.cmd == "status":
