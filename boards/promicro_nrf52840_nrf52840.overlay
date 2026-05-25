@@ -25,9 +25,54 @@
 	};
 };
 
-/* Free P1.04 / P1.06 (the I2C1 default pins) for use as SD-CS and CNVR. */
+/* I2C1 default pins (P1.04 / P1.06) are repurposed as SD-CS and CNVR; re-map the
+ * TWIM1 bus to two freed pins for a DEDICATED display I2C, so the SSD1306 never
+ * contends with the INA228 on TWIM0. (nRF52840 TWIM max is 400 kHz, no FM+, which
+ * is exactly why the display gets its own bus.) Bus + node are inert until
+ * CONFIG_APP_DISPLAY selects the SSD1306 driver. */
+&pinctrl {
+	i2c1_disp: i2c1_disp {
+		group1 {
+			psels = <NRF_PSEL(TWIM_SDA, 0, 22)>,
+				<NRF_PSEL(TWIM_SCL, 0, 24)>;
+		};
+	};
+	i2c1_disp_sleep: i2c1_disp_sleep {
+		group1 {
+			psels = <NRF_PSEL(TWIM_SDA, 0, 22)>,
+				<NRF_PSEL(TWIM_SCL, 0, 24)>;
+			low-power-enable;
+		};
+	};
+};
+
 &i2c1 {
-	status = "disabled";
+	compatible = "nordic,nrf-twim";
+	status = "okay";
+	clock-frequency = <I2C_BITRATE_FAST>;
+	pinctrl-0 = <&i2c1_disp>;
+	pinctrl-1 = <&i2c1_disp_sleep>;
+	pinctrl-names = "default", "sleep";
+
+	oled: ssd1306@3c {
+		compatible = "solomon,ssd1306";
+		reg = <0x3c>;
+		width = <128>;
+		height = <64>;
+		segment-offset = <0>;
+		page-offset = <0>;
+		display-offset = <0>;
+		multiplex-ratio = <63>;
+		segment-remap;
+		com-invdir;
+		prechargep = <0x22>;
+	};
+};
+
+/ {
+	chosen {
+		zephyr,display = &oled;
+	};
 };
 
 /* INA228 precision channel — I2C Fast-mode-plus, address 0x40 (A0/A1 = GND).

@@ -37,6 +37,18 @@ K_MSGQ_DEFINE(ina228_msgq, sizeof(struct ina228_sample), INA228_MSGQ_DEPTH, 4);
 static const struct device *const i2c = DEVICE_DT_GET(DT_NODELABEL(i2c0));
 static float s_current_lsb;         /* A/LSB, from SHUNT_CAL */
 
+static struct ina228_sample s_last;  /* latest sample, for cosmetic readers */
+static volatile bool s_have_last;
+
+bool ina228_last(struct ina228_sample *out)
+{
+	if (!s_have_last) {
+		return false;
+	}
+	*out = s_last;   /* benign torn-read risk; cosmetic only */
+	return true;
+}
+
 static struct k_thread rd_thread;
 static k_tid_t rd_tid;
 static volatile bool rd_running;

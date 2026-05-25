@@ -15,6 +15,7 @@
 #include "config.h"
 #include "clock.h"
 #include "power.h"
+#include "display.h"
 #endif
 
 LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
@@ -42,6 +43,7 @@ int main(void)
 	ina228_init();
 	ble_stream_init();
 	usb_storage_init();
+	display_init();   /* no-op unless CONFIG_APP_DISPLAY */
 	logger_init();
 
 	/* logctl owns the mode (logging / offload / ship), driven by the console,

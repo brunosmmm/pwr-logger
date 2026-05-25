@@ -26,4 +26,8 @@ int ina228_init(void);
 int ina228_start(void);
 int ina228_stop(void);
 
+/* Latest sample (cached by the read thread) for cosmetic readers (display).
+ * Returns false if none yet. Not for the data path (use ina228_msgq). */
+bool ina228_last(struct ina228_sample *out);
+
 #endif /* INA228_H_ */

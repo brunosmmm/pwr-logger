@@ -11,6 +11,17 @@ config APP_BRINGUP
 	  SAADC (AIN7), logging results to the console. Use this to verify wiring
 	  one component at a time. Set to 'n' for the real logging firmware.
 
+config APP_DISPLAY
+	bool "SSD1306 OLED status display (I2C on TWIM1)"
+	default n
+	select DISPLAY
+	select SSD1306
+	select CHARACTER_FRAMEBUFFER
+	help
+	  128x64 SSD1306 OLED on a dedicated I2C bus (TWIM1 / i2c1, address 0x3C),
+	  showing live current/voltage/state/battery. Off by default so the
+	  firmware builds/runs without the panel fitted; set 'y' once it's wired.
+
 endmenu
 
 source "Kconfig.zephyr"
