@@ -3,6 +3,7 @@
 #include "storage.h"
 #include "config.h"
 #include "clock.h"
+#include "power.h"
 
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
@@ -50,6 +51,7 @@ static void to_stopped(void)
 		(void)storage_mount();   /* re-take the card we released */
 	}
 	s_state = LS_STOPPED;
+	power_batt_sample();             /* SAADC free now */
 	LOG_INF("-> STOPPED");
 }
 
@@ -63,6 +65,7 @@ static void to_offload(void)
 	}
 	(void)storage_unmount();         /* release FatFs so the host owns the blocks */
 	s_state = LS_OFFLOAD;
+	power_batt_sample();             /* SAADC free now */
 	LOG_INF("-> OFFLOAD (SD released; host may mount the drive)");
 }
 
@@ -140,6 +143,7 @@ K_THREAD_DEFINE(logctl_tid, 4096, logctl_thread, NULL, NULL, NULL, 7, 0, 0);
 
 void logctl_init(void)
 {
+	power_batt_sample();   /* SAADC free before logging starts */
 	if (config_get()->autostart) {
 		logctl_post(EV_LOG_START);
 	} else {

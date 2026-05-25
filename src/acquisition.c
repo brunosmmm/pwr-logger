@@ -160,3 +160,42 @@ int acq_stop(void)
 	nrfx_saadc_abort();
 	return 0;
 }
+
+int acq_read_vddh_mv(void)
+{
+	nrfx_saadc_channel_t ch =
+		NRFX_SAADC_DEFAULT_CHANNEL_SE(NRFX_ANALOG_INTERNAL_VDDHDIV5, 1);
+	int16_t sample = 0;
+	int err;
+
+	ch.channel_config.gain = NRF_SAADC_GAIN1_6;            /* FS = 0.6/(1/6) = 3.6 V */
+	ch.channel_config.reference = NRF_SAADC_REFERENCE_INTERNAL;
+	ch.channel_config.acq_time = NRF_SAADC_ACQTIME_10US;   /* high-Z internal source */
+
+	err = nrfx_saadc_channel_config(&ch);
+	if (err != 0) {
+		LOG_WRN("vddh: channel_config -> %d", err);
+		return -1;
+	}
+	err = nrfx_saadc_simple_mode_set(BIT(1), NRF_SAADC_RESOLUTION_12BIT,
+					NRF_SAADC_OVERSAMPLE_DISABLED, NULL);
+	if (err != 0) {
+		LOG_WRN("vddh: simple_mode_set -> %d", err);
+		return -1;
+	}
+	err = nrfx_saadc_buffer_set(&sample, 1);
+	if (err != 0) {
+		LOG_WRN("vddh: buffer_set -> %d", err);
+		return -1;
+	}
+	err = nrfx_saadc_mode_trigger();   /* blocking (handler == NULL) */
+	if (err != 0) {
+		LOG_WRN("vddh: mode_trigger -> %d", err);
+		return -1;
+	}
+	if (sample < 0) {
+		sample = 0;
+	}
+	/* 12-bit code -> input mV (FS 3.6 V), then x5 to undo VDDHDIV5. */
+	return ((int)sample * 3600 / 4096) * 5;
+}

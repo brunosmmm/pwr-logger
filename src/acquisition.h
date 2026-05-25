@@ -27,4 +27,9 @@ void acq_block_release(struct acq_block *blk);
 /* Cumulative count of dropped buffers (pool exhausted / queue full). */
 uint32_t acq_drops(void);
 
+/* One-shot battery read: SAADC VDDHDIV5 vs the internal 0.6 V ref, x5 -> VDDH mV.
+ * ONLY valid while the fast channel is stopped (shares the single SAADC; the fast
+ * path uses oversampling, which is single-channel only). Returns mV, <0 on error. */
+int acq_read_vddh_mv(void);
+
 #endif /* ACQUISITION_H_ */

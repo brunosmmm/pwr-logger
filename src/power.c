@@ -1,4 +1,5 @@
 #include "power.h"
+#include "acquisition.h"
 
 #include <zephyr/kernel.h>
 #include <zephyr/drivers/gpio.h>
@@ -28,4 +29,21 @@ int power_init(void)
 	gpio_pin_configure_dt(&rail, GPIO_OUTPUT_ACTIVE);
 	LOG_INF("3V3 rail ON");
 	return 0;
+}
+
+/* Last battery (VDDH) reading in mV; refreshed only when the SAADC is free. */
+static int s_batt_mv = -1;
+
+void power_batt_sample(void)
+{
+	int mv = acq_read_vddh_mv();
+
+	if (mv >= 0) {
+		s_batt_mv = mv;
+	}
+}
+
+int power_batt_mv(void)
+{
+	return s_batt_mv;
 }

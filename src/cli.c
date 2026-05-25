@@ -1,6 +1,7 @@
 #include "config.h"
 #include "clock.h"
 #include "logctl.h"
+#include "power.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -87,6 +88,25 @@ static int cmd_poweroff(const struct shell *sh, size_t argc, char **argv)
 	ARG_UNUSED(argc); ARG_UNUSED(argv);
 	logctl_post(EV_POWEROFF);
 	shell_print(sh, "powering off");
+	return 0;
+}
+
+static int cmd_batt(const struct shell *sh, size_t argc, char **argv)
+{
+	int mv;
+
+	ARG_UNUSED(argc);
+	ARG_UNUSED(argv);
+	if (logctl_state() != LS_LOGGING) {
+		power_batt_sample();   /* SAADC free -> fresh reading */
+	}
+	mv = power_batt_mv();
+	if (mv < 0) {
+		shell_print(sh, "battery: unknown (not sampled yet)");
+	} else {
+		shell_print(sh, "battery (VDDH): %d.%03d V%s", mv / 1000, mv % 1000,
+			    logctl_state() == LS_LOGGING ? "  (cached; SAADC busy logging)" : "");
+	}
 	return 0;
 }
 
@@ -182,6 +202,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(pwr_sub,
 	SHELL_CMD(offload,  NULL, "stop + expose SD as USB drive", cmd_offload),
 	SHELL_CMD(resume,   NULL, "leave offload, resume logging", cmd_resume),
 	SHELL_CMD(poweroff, NULL, "clean stop + power off", cmd_poweroff),
+	SHELL_CMD(batt,     NULL, "battery (VDDH) voltage", cmd_batt),
 	SHELL_CMD(time,     &time_sub, "time get/set", NULL),
 	SHELL_CMD(config,   &cfg_sub,  "config get/set/list", NULL),
 	SHELL_SUBCMD_SET_END);
