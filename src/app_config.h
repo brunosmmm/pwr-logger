@@ -13,6 +13,16 @@
 #define ACQ_BUF_SAMPLES          8192u      /* int16 per DMA buffer (16 KB)    */
 #define ACQ_BUF_COUNT            8u         /* pool depth (~128 KB, ~320 ms)   */
 
+/* ---- Oversampling decimation: 200 kSPS acquire -> 20 kSPS logged --------- */
+/* Individual 200 kSPS codes are noisy; average DECIM_FACTOR of them per output
+ * for ~sqrt(DECIM_FACTOR) (~+1.6 bit) noise reduction. Keep DECIM_SHIFT sub-LSB
+ * bits (output = (sum << DECIM_SHIFT) / DECIM_FACTOR) so that gain isn't
+ * truncated away; the TDMS linear-scale slope is divided by 2^DECIM_SHIFT to
+ * compensate. Acquisition still runs at the full ACQ_SAMPLE_RATE_HZ. */
+#define DECIM_FACTOR             10u        /* 200 kSPS -> 20 kSPS             */
+#define DECIM_SHIFT              2u         /* keep 2 sub-LSB bits (x4, fits i16) */
+#define LOG_SAMPLE_RATE_HZ       (ACQ_SAMPLE_RATE_HZ / DECIM_FACTOR)  /* 20000 */
+
 /* ---- Slow precision channel (INA228) ------------------------------------ */
 #define SLOW_FLUSH_INTERVAL_MS   1000u      /* batch slow records into a TDMS  */
                                             /* segment ~1x/s                   */
