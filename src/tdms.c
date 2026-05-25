@@ -156,12 +156,10 @@ static void tick_to_ni(uint64_t tick, uint64_t *frac, int64_t *sec)
 }
 
 /* ---- metadata builders ------------------------------------------------- */
-/* code -> amps; divided by 2^DECIM_SHIFT because logged samples are the
- * decimated average scaled up by that factor to retain sub-LSB resolution. */
+/* code -> amps. ADC_BITS=14 (hardware-oversampled), so full-scale code = 2^14. */
 static const double FAST_SLOPE =
 	(double)ADC_VFULL_SCALE_V /
-	((double)(1u << ADC_BITS) * (double)INA240_GAIN * (double)INA240_SHUNT_OHMS) /
-	(double)(1u << DECIM_SHIFT);
+	((double)(1u << ADC_BITS) * (double)INA240_GAIN * (double)INA240_SHUNT_OHMS);
 static const double FAST_INTERCEPT =
 	-(double)INA240_VREF_V / ((double)INA240_GAIN * (double)INA240_SHUNT_OHMS);
 
@@ -202,7 +200,7 @@ static size_t meta_fast_full(uint8_t *out, size_t cap, uint16_t n, uint64_t t_fi
 	p_f64(&b, "NI_Scale[0]_Linear_Slope", FAST_SLOPE);
 	p_f64(&b, "NI_Scale[0]_Linear_Y_Intercept", FAST_INTERCEPT);
 	p_time(&b, "wf_start_time", frac, sec);
-	p_f64(&b, "wf_increment", 1.0 / (double)LOG_SAMPLE_RATE_HZ);
+	p_f64(&b, "wf_increment", 1.0 / (double)ACQ_SAMPLE_RATE_HZ);
 	p_f64(&b, "wf_start_offset", 0.0);
 
 	return b.ovf ? 0 : b.len;

@@ -110,8 +110,8 @@ int acq_init(void)
 	/* Calibrate the SAADC's internal offset (blocking; handler NULL). */
 	(void)nrfx_saadc_offset_calibrate(NULL);
 
-	LOG_INF("acq_init: AIN7, 12-bit, 3us acq, target %u kSPS",
-		ACQ_SAMPLE_RATE_HZ / 1000u);
+	LOG_INF("acq_init: AIN7, 14-bit, %ux oversample -> %u kSPS",
+		ACQ_OVERSAMPLE, ACQ_SAMPLE_RATE_HZ / 1000u);
 	return 0;
 }
 
@@ -123,8 +123,13 @@ int acq_start(void)
 
 	adv.internal_timer_cc = SAADC_TIMER_CC;
 	adv.start_on_end = true; /* continuous: re-START on each END */
+	adv.oversampling = NRF_SAADC_OVERSAMPLE_8X;  /* HW average 8 conv/output sample */
+	adv.burst = NRF_SAADC_BURST_ENABLED;         /* one SAMPLE trigger -> 8 bursts */
 
-	err = nrfx_saadc_advanced_mode_set(BIT(0), NRF_SAADC_RESOLUTION_12BIT, &adv,
+	BUILD_ASSERT(ACQ_OVERSAMPLE == 8, "oversample enum must match ACQ_OVERSAMPLE");
+
+	/* 14-bit so the oversample's sub-LSB resolution gain is retained in RAM. */
+	err = nrfx_saadc_advanced_mode_set(BIT(0), NRF_SAADC_RESOLUTION_14BIT, &adv,
 					   saadc_evt);
 	if (err != 0) {
 		LOG_ERR("advanced_mode_set -> %d", err);
