@@ -26,6 +26,12 @@ static struct tdms_writer  s_tdms;
 static volatile bool s_running;
 static bool s_session; /* true = recording to SD; false = monitor-only */
 
+/* Fast-channel (INA240 -> SAADC) code->amps, same scaling as tdms.c. */
+#define FAST_SLOPE_A_PER_CODE ((double)ADC_VFULL_SCALE_V / \
+	((double)(1u << ADC_BITS) * (double)INA240_GAIN * (double)INA240_SHUNT_OHMS))
+#define FAST_INTERCEPT_A (-(double)INA240_VREF_V / \
+	((double)INA240_GAIN * (double)INA240_SHUNT_OHMS))
+
 /*
  * The contract: ALWAYS drain acq_msgq (feed the live view + return buffers to
  * the pool); persisting to SD is conditional on a session being open. This keeps
@@ -42,6 +48,7 @@ static void writer_fn(void *a, void *b, void *c)
 	uint64_t samples = 0;
 	int64_t t_report = k_uptime_get();
 	int64_t t_flush = t_report;
+	float fast_avg = 0.0f;   /* latest agg mean code, for fast-channel readout */
 
 	while (s_running) {
 		struct acq_block blk;
@@ -75,8 +82,12 @@ static void writer_fn(void *a, void *b, void *c)
 		}
 
 		if (now - t_report >= 1000) {
-			LOG_INF("acq: %llu samples/s, %u drops [%s]", samples,
-				acq_drops(), s_session ? "logging" : "monitor");
+			int fast_ua = (int)((FAST_SLOPE_A_PER_CODE * fast_avg +
+					     FAST_INTERCEPT_A) * 1e6);
+
+			LOG_INF("acq: %llu samples/s, %u drops [%s]  fast_I=%d uA (code %d)",
+				samples, acq_drops(), s_session ? "logging" : "monitor",
+				fast_ua, (int)fast_avg);
 			samples = 0;
 			t_report = now;
 		}
@@ -84,6 +95,7 @@ static void writer_fn(void *a, void *b, void *c)
 		struct agg_window w;
 
 		if (agg_take(&w)) {
+			fast_avg = w.avg;
 			ble_stream_publish(&w);
 		}
 	}
