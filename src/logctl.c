@@ -110,9 +110,14 @@ static void handle(enum logctl_event ev)
 		to_ship();
 		break;
 	case EV_LOW_BATT:
-		/* protect the recording now; deeper power policy in power.c */
+		LOG_WRN("low battery");
 		if (s_state == LS_LOGGING) {
-			to_stopped();
+			to_stopped();   /* flush + close the file; also samples battery */
+		}
+		if (power_batt_mv() >= 0 &&
+		    power_batt_mv() < (int)config_get()->pof_crit_mv) {
+			LOG_WRN("battery critical (%d mV) -> ship", power_batt_mv());
+			to_ship();
 		}
 		break;
 	case EV_USB_ON:

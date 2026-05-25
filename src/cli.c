@@ -91,6 +91,14 @@ static int cmd_poweroff(const struct shell *sh, size_t argc, char **argv)
 	return 0;
 }
 
+static int cmd_lowbatt(const struct shell *sh, size_t argc, char **argv)
+{
+	ARG_UNUSED(argc); ARG_UNUSED(argv);
+	logctl_post(EV_LOW_BATT);
+	shell_print(sh, "simulated low-battery event");
+	return 0;
+}
+
 static int cmd_batt(const struct shell *sh, size_t argc, char **argv)
 {
 	int mv;
@@ -203,6 +211,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(pwr_sub,
 	SHELL_CMD(resume,   NULL, "leave offload, resume logging", cmd_resume),
 	SHELL_CMD(poweroff, NULL, "clean stop + power off", cmd_poweroff),
 	SHELL_CMD(batt,     NULL, "battery (VDDH) voltage", cmd_batt),
+	SHELL_CMD(lowbatt,  NULL, "simulate low-battery event (test)", cmd_lowbatt),
 	SHELL_CMD(time,     &time_sub, "time get/set", NULL),
 	SHELL_CMD(config,   &cfg_sub,  "config get/set/list", NULL),
 	SHELL_SUBCMD_SET_END);
