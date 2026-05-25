@@ -1,8 +1,11 @@
 #include "tdms.h"
 #include "storage.h"
 #include "app_config.h"
+#include "clock.h"
 
+#include <stdio.h>
 #include <string.h>
+#include <time.h>
 #include <zephyr/logging/log.h>
 
 LOG_MODULE_REGISTER(tdms, LOG_LEVEL_INF);
@@ -144,15 +147,49 @@ static void p_time(struct buf *b, const char *name, uint64_t frac, int64_t sec)
 	b_u64(b, (uint64_t)sec);   /* ... then seconds since 1904-01-01 UTC   */
 }
 
-/* master tick (1 us) -> NI timestamp components. Relative mode: no host
- * wall-clock anchor yet, so this is seconds-since-boot off the 1904 epoch. */
-static void tick_to_ni(uint64_t tick, uint64_t *frac, int64_t *sec)
-{
-	*sec = (int64_t)(tick / MASTER_CLOCK_HZ);
-	uint64_t rem = tick % MASTER_CLOCK_HZ;   /* leftover 1 us ticks */
+/* seconds between the NI/LabVIEW epoch (1904-01-01) and the Unix epoch */
+#define NI_EPOCH_OFFSET 2082844800LL
+#define NI_2POW64       18446744073709551616.0
 
-	/* frac = rem/MASTER_CLOCK_HZ of a second, scaled to 2^-64 units */
-	*frac = (uint64_t)(((double)rem / (double)MASTER_CLOCK_HZ) * 18446744073709551616.0);
+/* master tick (1 us) -> NI timestamp, anchored to the session wall clock.
+ * NI sec = (base_unix + (tick-base_tick)/master) + 1904 offset. When the clock
+ * was never set (abs_ok=0) it degrades to seconds-since-session-start. */
+static void ni_abs(const struct tdms_writer *w, uint64_t tick, uint64_t *frac, int64_t *sec)
+{
+	int64_t base = w->abs_ok ? (w->base_unix + NI_EPOCH_OFFSET) : 0;
+	int64_t d = (int64_t)(tick - w->base_tick);   /* signed: a sample may pre-date the anchor */
+	int64_t s = d / (int64_t)MASTER_CLOCK_HZ;
+	int64_t rem = d % (int64_t)MASTER_CLOCK_HZ;
+
+	if (rem < 0) {                 /* floor toward -inf so frac stays [0,1) */
+		s -= 1;
+		rem += MASTER_CLOCK_HZ;
+	}
+	*sec = base + s;
+	*frac = (uint64_t)(((double)rem / (double)MASTER_CLOCK_HZ) * NI_2POW64);
+}
+
+/* Extend the slow channel's raw 32-bit capture ticks onto the 64-bit session
+ * timeline (its own state, fed in capture order; a true wrap is a near-2^32
+ * backward step, distinct from a few-ms pre-anchor sample). */
+static uint64_t slow_extend(struct tdms_writer *w, uint32_t t32)
+{
+	if (t32 < w->slow_prev32 && (w->slow_prev32 - t32) > 0x80000000u) {
+		w->slow_hi += (1ULL << 32);
+	}
+	w->slow_prev32 = t32;
+	return w->slow_hi | (uint64_t)t32;
+}
+
+static void iso_utc(int64_t unix_s, char *buf, size_t cap)
+{
+	time_t t = (time_t)unix_s;
+	struct tm tm;
+
+	gmtime_r(&t, &tm);
+	snprintf(buf, cap, "%04d-%02d-%02dT%02d:%02d:%02dZ",
+		 tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
+		 tm.tm_hour, tm.tm_min, tm.tm_sec);
 }
 
 /* ---- metadata builders ------------------------------------------------- */
@@ -163,18 +200,33 @@ static const double FAST_SLOPE =
 static const double FAST_INTERCEPT =
 	-(double)INA240_VREF_V / ((double)INA240_GAIN * (double)INA240_SHUNT_OHMS);
 
-static size_t meta_fast_full(uint8_t *out, size_t cap, uint16_t n, uint64_t t_first)
+static size_t meta_fast_full(struct tdms_writer *w, uint8_t *out, size_t cap,
+			     uint16_t n, uint64_t t_first)
 {
 	struct buf b = { out, cap, 0, false };
 	uint64_t frac;
 	int64_t sec;
+	char iso[24];
+
+	/* Establish the session wall-clock anchor on the first fast sample. */
+	w->base_tick = t_first;
+	w->base_unix = (int64_t)clk_now();
+	w->abs_ok = clk_has_time();
+	w->slow_hi = t_first & 0xFFFFFFFF00000000ULL;
+	w->slow_prev32 = (uint32_t)t_first;
+	w->have_anchor = true;
+	if (w->abs_ok) {
+		iso_utc(w->base_unix, iso, sizeof(iso));
+	} else {
+		strcpy(iso, "unsynced");
+	}
 
 	b_u32(&b, 3);   /* root + group + channel */
 
 	/* root "/" : session/front-end properties for traceability */
 	b_str(&b, "/");
 	b_u32(&b, NO_RAW_DATA);
-	b_u32(&b, 8);
+	b_u32(&b, 10);
 	p_i32(&b, "pwrlog_format_version", 1);
 	p_i32(&b, "master_clock_hz", (int32_t)MASTER_CLOCK_HZ);
 	p_f64(&b, "ina240_gain", INA240_GAIN);
@@ -183,6 +235,8 @@ static size_t meta_fast_full(uint8_t *out, size_t cap, uint16_t n, uint64_t t_fi
 	p_f64(&b, "ina228_shunt_ohms", INA228_SHUNT_OHMS);
 	p_f64(&b, "adc_vfull_scale_v", ADC_VFULL_SCALE_V);
 	p_i32(&b, "adc_bits", (int32_t)ADC_BITS);
+	p_str(&b, "session_start_utc", iso);
+	p_i32(&b, "time_synced", clk_is_synced());
 
 	/* group "/'fast'" */
 	b_str(&b, "/'fast'");
@@ -190,7 +244,7 @@ static size_t meta_fast_full(uint8_t *out, size_t cap, uint16_t n, uint64_t t_fi
 	b_u32(&b, 0);
 
 	/* channel "/'fast'/'i'" : i16 raw codes, NI linear scale -> amps */
-	tick_to_ni(t_first, &frac, &sec);
+	ni_abs(w, t_first, &frac, &sec);
 	b_str(&b, "/'fast'/'i'");
 	b_raw_index(&b, TDS_I16, n);
 	b_u32(&b, 8);
@@ -277,7 +331,8 @@ static size_t meta_slow(uint8_t *out, size_t cap, size_t n, bool full)
 }
 
 /* de-interleave slow records into channel-contiguous raw data */
-static size_t slow_raw(uint8_t *out, size_t cap, const struct ina228_sample *s, size_t n)
+static size_t slow_raw(struct tdms_writer *w, uint8_t *out, size_t cap,
+		       const struct ina228_sample *s, size_t n)
 {
 	struct buf b = { out, cap, 0, false };
 
@@ -285,7 +340,7 @@ static size_t slow_raw(uint8_t *out, size_t cap, const struct ina228_sample *s, 
 		uint64_t frac;
 		int64_t sec;
 
-		tick_to_ni(s[i].t_capture, &frac, &sec);
+		ni_abs(w, slow_extend(w, s[i].t_capture), &frac, &sec);
 		b_u64(&b, frac);
 		b_u64(&b, (uint64_t)sec);
 	}
@@ -349,6 +404,12 @@ int tdms_open(struct tdms_writer *w, struct storage_file *f)
 	w->slow_meta = false;
 	w->last_objset = 0;
 	w->fast_seq = 0;
+	w->have_anchor = false;
+	w->abs_ok = false;
+	w->base_unix = 0;
+	w->base_tick = 0;
+	w->slow_prev32 = 0;
+	w->slow_hi = 0;
 	return 0;
 }
 
@@ -361,7 +422,7 @@ int tdms_write_fast(struct tdms_writer *w, const int16_t *samples,
 	if (w->last_objset == 1) {
 		toc = TOC_RAW;                       /* raw-only: reuse prev list */
 	} else if (!w->fast_meta) {
-		mlen = meta_fast_full(s_meta, sizeof(s_meta), n, t_first_tick);
+		mlen = meta_fast_full(w, s_meta, sizeof(s_meta), n, t_first_tick);
 		w->fast_meta = true;
 		toc = TOC_META | TOC_NEWOBJ | TOC_RAW;
 	} else {
@@ -410,7 +471,7 @@ int tdms_write_slow(struct tdms_writer *w, const struct ina228_sample *s, size_t
 		return -ENOMEM;
 	}
 
-	size_t rlen = slow_raw(s_slow, sizeof(s_slow), s, n);
+	size_t rlen = slow_raw(w, s_slow, sizeof(s_slow), s, n);
 
 	if (rlen == 0) {
 		LOG_ERR("slow raw overflow");

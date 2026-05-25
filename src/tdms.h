@@ -21,6 +21,15 @@ struct tdms_writer {
 	bool     slow_meta;        /* first FULL slow-metadata segment emitted     */
 	uint8_t  last_objset;      /* 0=none 1=fast 2=slow: prev seg's raw obj set */
 	uint32_t fast_seq;
+
+	/* Session wall-clock anchor, set at the first fast write. Absolute NI
+	 * timestamps = base_unix + (tick - base_tick)/master_clock. */
+	bool     have_anchor;
+	bool     abs_ok;           /* anchor carries real wall time, not relative  */
+	int64_t  base_unix;        /* wall seconds at base_tick                     */
+	uint64_t base_tick;        /* 64-bit master tick at session start          */
+	uint32_t slow_prev32;      /* slow 32-bit tick extender state              */
+	uint64_t slow_hi;
 };
 
 int tdms_open(struct tdms_writer *w, struct storage_file *f);
