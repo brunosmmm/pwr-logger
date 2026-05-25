@@ -11,6 +11,8 @@
 #include "ble_stream.h"
 #include "usb_msc.h"
 #include "logger.h"
+#include "config.h"
+#include "clock.h"
 #endif
 
 LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
@@ -24,6 +26,13 @@ int main(void)
 	/* Phase 0/1: hardware bring-up self-test (does not return). */
 	bringup_run();
 #else
+	/* Persistent config + wall clock first: clk_init() sets defaults before
+	 * config_load() runs settings_load() (which fills both via static
+	 * handlers); clk_start() then restores the time estimate. */
+	clk_init();
+	config_load();
+	clk_start();
+
 	acq_init();
 	ina228_init();
 	ble_stream_init();

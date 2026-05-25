@@ -15,6 +15,9 @@ target_sources(app PRIVATE
     src/logger.c
     src/ble_stream.c
     src/usb_msc.c
+    src/config.c
+    src/clock.c
+    src/cli.c
 )
 
 target_include_directories(app PRIVATE src)
