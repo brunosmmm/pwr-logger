@@ -200,79 +200,112 @@ def cmd_monitor():
     latest = {}
 
     def render():
-        t = Table(title="pwr-logger telemetry (BLE)", header_style="bold")
-        t.add_column("field", style="cyan")
-        t.add_column("value", justify="right")
-        if not latest:
-            t.add_row("status", "[dim]waiting for notifications…[/]")
-            return t
-        cur = SLOPE * latest["avg"] + INTER
-        cur_min = SLOPE * latest["mn"] + INTER
-        cur_max = SLOPE * latest["mx"] + INTER
-        t.add_row("current (avg)", f"[bold green]{cur * 1000:8.1f} mA[/]")
-        t.add_row("min / max", f"{cur_min * 1000:.1f} / {cur_max * 1000:.1f} mA")
-        t.add_row("avg code", f"{latest['avg']:.1f}")
-        t.add_row("samples/window", str(latest["n"]))
-        t.add_row("rate", f"{latest.get('hz', 0):.1f} Hz")
+        # Fixed widths + a fixed set of rows so the table never resizes frame-to-frame.
+        t = Table(title="pwr-logger telemetry (BLE)", header_style="bold", width=46)
+        t.add_column("field", style="cyan", width=16, no_wrap=True)
+        t.add_column("value", justify="right", width=22, no_wrap=True)
+
+        if latest.get("n", 0) > 0:
+            cur = SLOPE * latest["avg"] + INTER
+            cur_min = SLOPE * latest["mn"] + INTER
+            cur_max = SLOPE * latest["mx"] + INTER
+            fast = f"[green]{cur * 1000:8.1f} mA[/]"
+            fmm = f"{cur_min * 1000:.0f} / {cur_max * 1000:.0f} mA"
+        else:
+            fast, fmm = "[dim]—[/]", "[dim]—[/]"
+
         if "state" in latest:
             try:
                 s = State(latest["state"])
-                name, col = s.name.lower(), s.color
+                st = f"[{s.color}]{s.name.lower()}[/]"
             except ValueError:
-                name, col = "?", "white"
-            t.add_row("state", f"[{col}]{name}[/]")
-            t.add_row("battery", f"{latest['batt'] / 1000:.3f} V" if latest["batt"] else "—")
+                st = "?"
+            batt = f"{latest['batt'] / 1000:.3f} V" if latest.get("batt") else "—"
+        else:
+            st, batt = "[dim]…[/]", "[dim]…[/]"
+
+        t.add_row("fast current", fast)        # INA240 -> SAADC (±7.5 A range; noisy at mA)
+        t.add_row("fast min/max", fmm)
+        t.add_row("rate", f"{latest.get('hz', 0):.1f} Hz")
+        t.add_row("state", st)
+        t.add_row("battery", batt)
         return t
 
-    async def run():
-        console.print("[cyan]scanning for pwr-logger…[/]")
-        # Match on the advertised local name (BlueZ's find_device_by_name relies
-        # on the cached Name property, which is often unset during active scan).
-        dev = await BleakScanner.find_device_by_filter(
-            lambda d, adv: adv.local_name == "pwr-logger", timeout=15.0)
-        if not dev:
-            console.print("[red]pwr-logger not found over BLE[/]")
+    times = []
+    last_rx = [0.0]
+    STALL_S = 4.0   # no notifications this long while connected -> drop + reconnect
+
+    def cb(_, data):
+        d = bytes(data)
+        if len(d) < 24:
             return
-        console.print(f"[green]connected[/] {dev.address}  (Ctrl-C to quit)")
-        times = []
+        ts, rms, avg, mn, mx, n = struct.unpack("<QffhhI", d[:24])
+        now = time.monotonic()
+        last_rx[0] = now
+        times.append(now)
+        del times[:-20]
+        hz = (len(times) - 1) / (times[-1] - times[0]) if len(times) > 1 else 0.0
+        latest.update(avg=avg, mn=mn, mx=mx, n=n, rms=rms, hz=hz)
+        if len(d) >= 27:   # extended: + u16 batt_mv, u8 state
+            batt, state = struct.unpack("<HB", d[24:27])
+            latest.update(batt=batt, state=state)
 
-        def cb(_, data):
-            d = bytes(data)
-            if len(d) < 24:
-                return
-            ts, rms, avg, mn, mx, n = struct.unpack("<QffhhI", d[:24])
-            now = time.monotonic()
-            times.append(now)
-            del times[:-20]
-            hz = (len(times) - 1) / (times[-1] - times[0]) if len(times) > 1 else 0.0
-            latest.update(avg=avg, mn=mn, mx=mx, n=n, rms=rms, hz=hz)
-            if len(d) >= 27:   # extended: + u16 batt_mv, u8 state
-                batt, state = struct.unpack("<HB", d[24:27])
-                latest.update(batt=batt, state=state)
+    def plain_line():
+        if not latest:
+            return
+        if latest["n"] > 0:
+            cur = SLOPE * latest["avg"] + INTER
+            head = (f"I={cur * 1000:7.1f} mA  min/max code="
+                    f"{latest['mn']}/{latest['mx']}  n={latest['n']}")
+        else:
+            head = "I=   --   mA  (not logging)"
+        extra = ""
+        if "state" in latest:
+            try:
+                extra = (f"  {State(latest['state']).name.lower()}"
+                         f"  {latest['batt'] / 1000:.2f}V")
+            except ValueError:
+                pass
+        console.print(f"{head}  {latest.get('hz', 0):.1f} Hz{extra}")
 
+    async def session():
+        # Match on the advertised local name (BlueZ's find_device_by_name relies on
+        # the cached Name property, which is often unset during active scan).
+        dev = await BleakScanner.find_device_by_filter(
+            lambda d, adv: adv.local_name == "pwr-logger", timeout=12.0)
+        if not dev:
+            return
         async with BleakClient(dev) as c:
+            console.print(f"[green]connected[/] {dev.address}")
             await c.start_notify(TELE_UUID, cb)
-            if console.is_terminal:
-                with Live(render(), console=console, refresh_per_second=8) as live:
-                    while True:
-                        await asyncio.sleep(0.12)
+            last_rx[0] = time.monotonic()
+            tty = console.is_terminal
+            live = Live(render(), console=console, refresh_per_second=8) if tty else None
+            if live:
+                live.start()
+            try:
+                while c.is_connected:
+                    await asyncio.sleep(0.12 if tty else 0.5)
+                    if live:
                         live.update(render())
-            else:
-                # piped/logged: emit a plain line per update
-                while True:
-                    await asyncio.sleep(0.5)
-                    if latest:
-                        cur = SLOPE * latest["avg"] + INTER
-                        extra = ""
-                        if "state" in latest:
-                            try:
-                                extra = (f"  {State(latest['state']).name.lower()}"
-                                         f"  {latest['batt'] / 1000:.2f}V")
-                            except ValueError:
-                                pass
-                        console.print(f"I={cur * 1000:7.1f} mA  min/max code="
-                                      f"{latest['mn']}/{latest['mx']}  n={latest['n']}  "
-                                      f"{latest.get('hz', 0):.1f} Hz{extra}")
+                    else:
+                        plain_line()
+                    if time.monotonic() - last_rx[0] > STALL_S:
+                        console.print("[yellow]no telemetry — reconnecting[/]")
+                        break
+            finally:
+                if live:
+                    live.stop()
+
+    async def run():
+        console.print("[cyan]monitoring pwr-logger (auto-reconnect; Ctrl-C to quit)…[/]")
+        while True:
+            try:
+                await session()
+            except Exception as e:  # noqa: BLE001
+                console.print(f"[yellow]link error: {e}[/]")
+            latest.clear()
+            await asyncio.sleep(1.0)   # brief pause before re-scan
 
     try:
         asyncio.run(run())

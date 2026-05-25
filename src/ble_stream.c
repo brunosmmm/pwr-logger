@@ -174,6 +174,29 @@ BT_CONN_CB_DEFINE(conn_cbs) = {
 	.le_param_updated = le_param_updated,
 };
 
+/* Heartbeat: when subscribed but the aggregator isn't publishing (not logging),
+ * still send state + battery every 500 ms so a central always sees the device
+ * (n = 0 marks "no fast-channel data"). Suppressed while logging publishes flow. */
+static void hb_fn(struct k_work *work);
+static K_WORK_DELAYABLE_DEFINE(hb_work, hb_fn);
+
+static void hb_fn(struct k_work *work)
+{
+	ARG_UNUSED(work);
+	if (s_subscribed && (k_uptime_get() - s_last_notify) >= 500) {
+		int batt = power_batt_mv();
+		struct pwr_telemetry t = {
+			.n = 0,   /* no fast-channel window */
+			.batt_mv = (batt > 0) ? (uint16_t)batt : 0,
+			.state = (uint8_t)logctl_state(),
+		};
+
+		s_last_notify = k_uptime_get();
+		(void)bt_gatt_notify(NULL, &pwr_svc.attrs[1], &t, sizeof(t));
+	}
+	k_work_schedule(&hb_work, K_MSEC(500));
+}
+
 int ble_stream_init(void)
 {
 	int err = bt_enable(NULL);
@@ -182,6 +205,7 @@ int ble_stream_init(void)
 		LOG_ERR("bt_enable -> %d", err);
 		return err;
 	}
+	k_work_schedule(&hb_work, K_MSEC(500));
 	return start_adv();
 }
 
