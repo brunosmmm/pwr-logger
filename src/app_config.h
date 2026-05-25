@@ -29,7 +29,7 @@
 #define ADC_VFULL_SCALE_V        3.6f       /* SAADC: internal 0.6V ref, gain 1/6 */
 #define ADC_BITS                 14u        /* 14-bit output (oversample retains sub-LSB) */
 #define INA240_GAIN              200.0f     /* V/V (A4 variant)                */
-#define INA240_VREF_V            1.65f      /* REF = VS/2 -> bidirectional (~1.65V idle); refine via calibration */
+#define INA240_VREF_V            1.6622f    /* CALIBRATED: INA240 0-A output measured at SAADC code 7565 (7565/2^14*3.6V); nominal VS/2=1.65 */
 #define INA240_SHUNT_OHMS        0.001f     /* INA240 board shunt (0.1 -> 1 mOhm swap) */
 
 /* ---- INA228 precision channel ------------------------------------------- */
