@@ -17,8 +17,9 @@ struct storage_file; /* fwd decl (storage.h) */
 
 struct tdms_writer {
 	struct storage_file *file;
-	bool     header_written;   /* first segment carries metadata + obj list */
-	uint8_t  last_objset;      /* 0 = none, 1 = fast, 2 = slow (for ToC reuse) */
+	bool     fast_meta;        /* first FULL fast-metadata segment emitted     */
+	bool     slow_meta;        /* first FULL slow-metadata segment emitted     */
+	uint8_t  last_objset;      /* 0=none 1=fast 2=slow: prev seg's raw obj set */
 	uint32_t fast_seq;
 };
 
