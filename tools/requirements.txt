@@ -1,0 +1,4 @@
+# pwrctl host CLI dependencies
+rich
+pyserial
+bleak
