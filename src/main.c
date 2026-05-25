@@ -14,6 +14,7 @@
 #include "logctl.h"
 #include "config.h"
 #include "clock.h"
+#include "power.h"
 #endif
 
 LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
@@ -33,6 +34,9 @@ int main(void)
 	clk_init();
 	config_load();
 	clk_start();
+
+	/* Bring the 3.3 V rail up before anything that needs it (INA228/INA240/SD). */
+	power_init();
 
 	acq_init();
 	ina228_init();

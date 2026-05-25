@@ -19,6 +19,7 @@ target_sources(app PRIVATE
     src/clock.c
     src/cli.c
     src/logctl.c
+    src/power.c
 )
 
 target_include_directories(app PRIVATE src)
