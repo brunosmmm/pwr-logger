@@ -200,19 +200,26 @@ def cmd_monitor():
     latest = {}
 
     def render():
-        # Fixed widths + a fixed set of rows so the table never resizes frame-to-frame.
-        t = Table(title="pwr-logger telemetry (BLE)", header_style="bold", width=46)
-        t.add_column("field", style="cyan", width=16, no_wrap=True)
-        t.add_column("value", justify="right", width=22, no_wrap=True)
+        # Fixed widths + a constant row set so the table never resizes frame-to-frame.
+        t = Table(title="pwr-logger telemetry (BLE)", header_style="bold", width=52)
+        t.add_column("field", style="cyan", width=20, no_wrap=True)
+        t.add_column("value", justify="right", width=24, no_wrap=True)
 
-        if latest.get("n", 0) > 0:
-            cur = SLOPE * latest["avg"] + INTER
-            cur_min = SLOPE * latest["mn"] + INTER
-            cur_max = SLOPE * latest["mx"] + INTER
-            fast = f"[green]{cur * 1000:8.1f} mA[/]"
-            fmm = f"{cur_min * 1000:.0f} / {cur_max * 1000:.0f} mA"
+        def dim(s):
+            return f"[dim]{s}[/]"
+
+        # INA228 precision channel (the trustworthy current/voltage/power)
+        ina_i = f"[bold green]{latest['ina_i'] * 1000:8.2f} mA[/]" if "ina_i" in latest else dim("—")
+        ina_v = f"{latest['ina_v']:.3f} V" if "ina_v" in latest else dim("—")
+        ina_p = f"{latest['ina_p'] * 1000:.2f} mW" if "ina_p" in latest else dim("—")
+        ina_t = f"{latest['ina_t']:.1f} °C" if "ina_t" in latest else dim("—")
+
+        # fast channel (raw INA240->SAADC; secondary/diagnostic)
+        if "avg" in latest and latest.get("n", 0) > 0:
+            fc = SLOPE * latest["avg"] + INTER
+            fast = dim(f"{fc * 1000:.0f} mA (code {latest['avg']:.0f})")
         else:
-            fast, fmm = "[dim]—[/]", "[dim]—[/]"
+            fast = dim("—")
 
         if "state" in latest:
             try:
@@ -220,13 +227,16 @@ def cmd_monitor():
                 st = f"[{s.color}]{s.name.lower()}[/]"
             except ValueError:
                 st = "?"
-            batt = f"{latest['batt'] / 1000:.3f} V" if latest.get("batt") else "—"
         else:
-            st, batt = "[dim]…[/]", "[dim]…[/]"
+            st = dim("…")
+        batt = f"{latest['batt'] / 1000:.3f} V" if latest.get("batt") else dim("—")
 
-        t.add_row("fast current", fast)        # INA240 -> SAADC (±7.5 A range; noisy at mA)
-        t.add_row("fast min/max", fmm)
-        t.add_row("rate", f"{latest.get('hz', 0):.1f} Hz")
+        t.add_row("current (INA228)", ina_i)
+        t.add_row("voltage (INA228)", ina_v)
+        t.add_row("power (INA228)", ina_p)
+        t.add_row("temp", ina_t)
+        t.add_row("fast Ch (raw)", fast)
+        t.add_row("fast rate", f"{latest.get('hz', 0):.1f} Hz")
         t.add_row("state", st)
         t.add_row("battery", batt)
         return t
@@ -237,36 +247,44 @@ def cmd_monitor():
 
     def cb(_, data):
         d = bytes(data)
-        if len(d) < 24:
+        if not d:
             return
-        ts, rms, avg, mn, mx, n = struct.unpack("<QffhhI", d[:24])
-        now = time.monotonic()
-        last_rx[0] = now
-        times.append(now)
-        del times[:-20]
-        hz = (len(times) - 1) / (times[-1] - times[0]) if len(times) > 1 else 0.0
-        latest.update(avg=avg, mn=mn, mx=mx, n=n, rms=rms, hz=hz)
-        if len(d) >= 27:   # extended: + u16 batt_mv, u8 state
-            batt, state = struct.unpack("<HB", d[24:27])
-            latest.update(batt=batt, state=state)
+        tag = d[0]
+        last_rx[0] = time.monotonic()
+        if tag == 0x01 and len(d) >= 15:        # FAST: raw fast-channel window
+            _, t_ms, avg, mn, mx, n = struct.unpack("<BIfhhH", d[:15])
+            now = time.monotonic()
+            times.append(now)
+            del times[:-20]
+            hz = (len(times) - 1) / (times[-1] - times[0]) if len(times) > 1 else 0.0
+            latest.update(avg=avg, mn=mn, mx=mx, n=n, hz=hz)
+        elif tag == 0x02 and len(d) >= 21:      # SLOW: INA228 real units
+            _, t_ms, vbus, i_a, p_w, temp = struct.unpack("<BIffff", d[:21])
+            latest.update(ina_v=vbus, ina_i=i_a, ina_p=p_w, ina_t=temp)
+        elif tag == 0x03 and len(d) >= 8:       # STATUS
+            _, state, batt, drops = struct.unpack("<BBHI", d[:8])
+            latest.update(state=state, batt=batt, drops=drops)
 
     def plain_line():
         if not latest:
             return
-        if latest["n"] > 0:
-            cur = SLOPE * latest["avg"] + INTER
-            head = (f"I={cur * 1000:7.1f} mA  min/max code="
-                    f"{latest['mn']}/{latest['mx']}  n={latest['n']}")
+        parts = []
+        if "ina_i" in latest:
+            parts.append(f"INA228 {latest['ina_i'] * 1000:.2f} mA "
+                         f"{latest.get('ina_v', 0):.3f} V")
         else:
-            head = "I=   --   mA  (not logging)"
-        extra = ""
+            parts.append("INA228 —")
+        if "avg" in latest and latest.get("n", 0) > 0:
+            fc = SLOPE * latest["avg"] + INTER
+            parts.append(f"fast {fc * 1000:.0f} mA")
         if "state" in latest:
             try:
-                extra = (f"  {State(latest['state']).name.lower()}"
-                         f"  {latest['batt'] / 1000:.2f}V")
+                parts.append(State(latest["state"]).name.lower())
             except ValueError:
                 pass
-        console.print(f"{head}  {latest.get('hz', 0):.1f} Hz{extra}")
+        if latest.get("batt"):
+            parts.append(f"{latest['batt'] / 1000:.2f} Vbat")
+        console.print("  ".join(parts))
 
     async def session():
         # Match on the advertised local name (BlueZ's find_device_by_name relies on

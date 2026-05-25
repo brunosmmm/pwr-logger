@@ -72,6 +72,7 @@ static void writer_fn(void *a, void *b, void *c)
 		while (slow_n < SLOW_BATCH_MAX &&
 		       k_msgq_get(&ina228_msgq, &s, K_NO_WAIT) == 0) {
 			slow[slow_n++] = s;
+			ble_stream_publish_slow(&s);   /* live INA228 stream (throttled) */
 		}
 
 		int64_t now = k_uptime_get();

@@ -2,6 +2,8 @@
 #include "logctl.h"
 #include "clock.h"
 #include "power.h"
+#include "acquisition.h"
+#include "app_config.h"
 
 #include <zephyr/kernel.h>
 #include <zephyr/bluetooth/bluetooth.h>
@@ -32,20 +34,44 @@ static const struct bt_uuid_128 ctrl_uuid = BT_UUID_INIT_128(PWR_CTRL_UUID);
 #define PWR_OP_POWEROFF 0x06
 #define PWR_OP_SETTIME  0x10   /* + u32 LE unix epoch */
 
-/* Wire format of one telemetry notification (little-endian, packed). */
-struct __packed pwr_telemetry {
-	uint64_t t_start;   /* master tick of the window start */
-	float    rms;       /* fast-channel RMS (raw code units for now) */
-	float    avg;
+/* Tagged telemetry records (little-endian, packed). First byte is the type. */
+#define TLM_FAST   0x01
+#define TLM_SLOW   0x02
+#define TLM_STATUS 0x03
+
+struct __packed rec_fast {
+	uint8_t  tag;
+	uint32_t t_ms;
+	float    avg;       /* fast-channel mean (raw SAADC code) */
 	int16_t  min;
 	int16_t  max;
-	uint32_t n;
-	uint16_t batt_mv;   /* VDDH (battery), cached */
-	uint8_t  state;     /* enum logctl_state */
+	uint16_t n;
 };
 
+struct __packed rec_slow {
+	uint8_t  tag;
+	uint32_t t_ms;
+	float    vbus_v;    /* INA228 bus (load) voltage */
+	float    i_a;       /* INA228 current (precision) */
+	float    p_w;
+	float    temp_c;
+};
+
+struct __packed rec_status {
+	uint8_t  tag;
+	uint8_t  state;     /* enum logctl_state */
+	uint16_t batt_mv;   /* VDDH (battery) */
+	uint32_t drops;     /* fast-channel cumulative drops */
+};
+
+/* INA228 register LSBs (match ina228.c). */
+#define INA228_CURRENT_LSB (INA228_IMAX_A / 524288.0f)   /* A/LSB (2^19)  */
+#define INA228_VBUS_V_LSB  195.3125e-6f
+#define INA228_TEMP_C_LSB  7.8125e-3f
+
 static volatile bool s_subscribed;
-static int64_t s_last_notify;
+static int64_t s_last_fast;   /* FAST throttle */
+static int64_t s_last_slow;   /* SLOW throttle */
 
 static void ccc_changed(const struct bt_gatt_attr *attr, uint16_t value)
 {
@@ -183,16 +209,16 @@ static K_WORK_DELAYABLE_DEFINE(hb_work, hb_fn);
 static void hb_fn(struct k_work *work)
 {
 	ARG_UNUSED(work);
-	if (s_subscribed && (k_uptime_get() - s_last_notify) >= 500) {
+	if (s_subscribed) {
 		int batt = power_batt_mv();
-		struct pwr_telemetry t = {
-			.n = 0,   /* no fast-channel window */
-			.batt_mv = (batt > 0) ? (uint16_t)batt : 0,
+		struct rec_status r = {
+			.tag = TLM_STATUS,
 			.state = (uint8_t)logctl_state(),
+			.batt_mv = (batt > 0) ? (uint16_t)batt : 0,
+			.drops = acq_drops(),
 		};
 
-		s_last_notify = k_uptime_get();
-		(void)bt_gatt_notify(NULL, &pwr_svc.attrs[1], &t, sizeof(t));
+		(void)bt_gatt_notify(NULL, &pwr_svc.attrs[1], &r, sizeof(r));
 	}
 	k_work_schedule(&hb_work, K_MSEC(500));
 }
@@ -211,30 +237,43 @@ int ble_stream_init(void)
 
 int ble_stream_publish(const struct agg_window *w)
 {
-	if (!s_subscribed) {
-		return 0;
-	}
-	/* Flood guard: the aggregator emits 50 ms windows (~20 Hz), so cap a bit
-	 * below that (25 Hz) to pass every window while dropping any burst. */
 	int64_t now = k_uptime_get();
+	struct rec_fast r;
 
-	if (now - s_last_notify < 40) {
+	if (!s_subscribed || (now - s_last_fast) < 40) {   /* ~20 Hz cap */
 		return 0;
 	}
-	s_last_notify = now;
+	s_last_fast = now;
 
-	int batt = power_batt_mv();
-	struct pwr_telemetry t = {
-		.t_start = w->t_start,
-		.rms = w->rms,
+	r = (struct rec_fast){
+		.tag = TLM_FAST,
+		.t_ms = (uint32_t)now,
 		.avg = w->avg,
 		.min = w->min,
 		.max = w->max,
-		.n = w->n,
-		.batt_mv = (batt > 0) ? (uint16_t)batt : 0,
-		.state = (uint8_t)logctl_state(),
+		.n = (uint16_t)w->n,
 	};
-
 	/* attrs[1] = characteristic value. Returns -ENOMEM when TX buffers are full. */
-	return bt_gatt_notify(NULL, &pwr_svc.attrs[1], &t, sizeof(t));
+	return bt_gatt_notify(NULL, &pwr_svc.attrs[1], &r, sizeof(r));
+}
+
+int ble_stream_publish_slow(const struct ina228_sample *s)
+{
+	int64_t now = k_uptime_get();
+	struct rec_slow r;
+
+	if (!s_subscribed || (now - s_last_slow) < 200) {   /* ~5 Hz cap */
+		return 0;
+	}
+	s_last_slow = now;
+
+	r = (struct rec_slow){
+		.tag = TLM_SLOW,
+		.t_ms = (uint32_t)now,
+		.vbus_v = (float)s->vbus_raw * INA228_VBUS_V_LSB,
+		.i_a = (float)s->current_raw * INA228_CURRENT_LSB,
+		.p_w = (float)s->power_raw * 3.2f * INA228_CURRENT_LSB,
+		.temp_c = (float)s->temp_raw * INA228_TEMP_C_LSB,
+	};
+	return bt_gatt_notify(NULL, &pwr_svc.attrs[1], &r, sizeof(r));
 }

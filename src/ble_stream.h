@@ -2,13 +2,19 @@
 #define BLE_STREAM_H_
 
 #include "aggregate.h"
+#include "ina228.h"
 
 /*
- * BLE aggregated live view (separate, compact schema; see DATA_FORMAT.md sect 7).
- * Also the OTA/DFU transport (mcumgr SMP over BLE).
+ * BLE live view: a multi-rate, tagged notification stream. Each notification is
+ * one self-contained record with a leading type byte:
+ *   0x01 FAST   - fast-channel aggregate window (~20 Hz, raw codes)
+ *   0x02 SLOW   - INA228 sample in real units (V/A/W/degC, its native rate)
+ *   0x03 STATUS - device state + battery + drops (~2 Hz)
+ * The central demuxes by tag; each channel streams at its own cadence.
  */
 
 int ble_stream_init(void);
-int ble_stream_publish(const struct agg_window *w);
+int ble_stream_publish(const struct agg_window *w);          /* FAST */
+int ble_stream_publish_slow(const struct ina228_sample *s);  /* SLOW (INA228) */
 
 #endif /* BLE_STREAM_H_ */
