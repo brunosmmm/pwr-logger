@@ -16,4 +16,6 @@ int  power_batt_mv(void);    /* last cached VDDH (battery) reading, mV; <0 = unk
 void power_batt_sample(void); /* refresh the reading; call ONLY when the SAADC is free
 			      * (fast channel stopped) -- e.g. boot, idle, offload */
 
+bool power_usb_present(void); /* VBUS detected right now (USB plugged) */
+
 #endif /* POWER_H_ */

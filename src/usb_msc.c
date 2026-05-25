@@ -6,6 +6,7 @@
 #include <zephyr/device.h>
 #include <zephyr/storage/disk_access.h>
 #include <zephyr/usb/usbd.h>
+#include <zephyr/usb/usbd_msg.h>
 #include <zephyr/usb/class/usbd_msc.h>
 #include <zephyr/logging/log.h>
 
@@ -35,6 +36,22 @@ USBD_CONFIGURATION_DEFINE(pwr_fs_config, USB_SCD_SELF_POWERED, 250, &pwr_fs_cfg_
 
 /* MSC LUN bound to the SD disk (disk-name "SD" from the devicetree). */
 USBD_DEFINE_MSC_LUN(sd, "SD", "pwrlog", "SD card", "0.10");
+
+/* VBUS plug/unplug -> logctl USB gate (USB present => stay ACTIVE; absent => idle). */
+static void usbd_msg_cb(struct usbd_context *const ctx, const struct usbd_msg *const msg)
+{
+	ARG_UNUSED(ctx);
+	switch (msg->type) {
+	case USBD_MSG_VBUS_READY:
+		logctl_post(EV_USB_ON);
+		break;
+	case USBD_MSG_VBUS_REMOVED:
+		logctl_post(EV_USB_OFF);
+		break;
+	default:
+		break;
+	}
+}
 
 int usb_storage_init(void)
 {
@@ -85,6 +102,8 @@ int usb_storage_init(void)
 		LOG_ERR("usbd_init -> %d", err);
 		return err;
 	}
+
+	(void)usbd_msg_register_cb(&pwr_usbd, usbd_msg_cb);
 
 	err = usbd_enable(&pwr_usbd);
 	if (err) {

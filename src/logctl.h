@@ -9,10 +9,11 @@
  */
 
 enum logctl_state {
-	LS_STOPPED = 0,   /* not recording (idle/monitor; refined with power mgmt) */
-	LS_LOGGING,       /* recording to SD                                       */
-	LS_OFFLOAD,       /* FatFs released; SD served to the USB host as MSC      */
-	LS_SHIP,          /* powering off                                          */
+	LS_STOPPED = 0,   /* not recording, USB present: rail on, ready            */
+	LS_LOGGING = 1,   /* recording to SD                                       */
+	LS_OFFLOAD = 2,   /* FatFs released; SD served to the USB host as MSC      */
+	LS_SHIP    = 3,   /* powering off (System OFF)                             */
+	LS_IDLE    = 4,   /* battery, not recording: rail off, dark, clock alive   */
 };
 
 enum logctl_event {

@@ -176,6 +176,7 @@ int logger_start(void)
 {
 	/* SD session is OPTIONAL: with no card we still acquire (monitor mode). */
 	s_session = false;
+	(void)storage_unmount();   /* drop any stale mount (idle rail-cycle / STOPPED) */
 	if (storage_mount() == 0 &&
 	    storage_session_begin(&s_file) == 0 &&
 	    tdms_open(&s_tdms, &s_file) == 0) {

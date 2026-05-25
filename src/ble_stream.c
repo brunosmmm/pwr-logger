@@ -135,6 +135,8 @@ static const struct bt_data ad[] = {
 		sizeof(CONFIG_BT_DEVICE_NAME) - 1),
 };
 
+static bool s_adv;
+
 static int start_adv(void)
 {
 	int err = bt_le_adv_start(BT_LE_ADV_CONN_FAST_1, ad, ARRAY_SIZE(ad), NULL, 0);
@@ -142,9 +144,21 @@ static int start_adv(void)
 	if (err) {
 		LOG_ERR("adv start -> %d", err);
 	} else {
+		s_adv = true;
 		LOG_INF("BLE advertising as '%s'", CONFIG_BT_DEVICE_NAME);
 	}
 	return err;
+}
+
+void ble_stream_set_adv(bool on)
+{
+	if (on && !s_adv) {
+		(void)start_adv();
+	} else if (!on && s_adv) {
+		(void)bt_le_adv_stop();
+		s_adv = false;
+		LOG_INF("BLE advertising stopped (idle)");
+	}
 }
 
 /* Want ~15-30 ms so the link can carry the ~20 Hz aggregate window stream

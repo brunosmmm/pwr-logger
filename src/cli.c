@@ -101,6 +101,22 @@ static int cmd_lowbatt(const struct shell *sh, size_t argc, char **argv)
 	return 0;
 }
 
+static int cmd_usb(const struct shell *sh, size_t argc, char **argv)
+{
+	if (argc < 2) {
+		shell_error(sh, "usage: pwr usb <on|off>");
+		return -EINVAL;
+	}
+	if (!strcmp(argv[1], "off")) {
+		logctl_post(EV_USB_OFF);
+		shell_print(sh, "simulated VBUS removed");
+	} else {
+		logctl_post(EV_USB_ON);
+		shell_print(sh, "simulated VBUS ready");
+	}
+	return 0;
+}
+
 static int cmd_batt(const struct shell *sh, size_t argc, char **argv)
 {
 	int mv;
@@ -214,6 +230,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(pwr_sub,
 	SHELL_CMD(poweroff, NULL, "clean stop + power off", cmd_poweroff),
 	SHELL_CMD(batt,     NULL, "battery (VDDH) voltage", cmd_batt),
 	SHELL_CMD(lowbatt,  NULL, "simulate low-battery event (test)", cmd_lowbatt),
+	SHELL_CMD(usb,      NULL, "simulate VBUS on/off (test)", cmd_usb),
 	SHELL_CMD(time,     &time_sub, "time get/set", NULL),
 	SHELL_CMD(config,   &cfg_sub,  "config get/set/list", NULL),
 	SHELL_SUBCMD_SET_END);

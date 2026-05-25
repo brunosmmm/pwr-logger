@@ -16,5 +16,6 @@
 int ble_stream_init(void);
 int ble_stream_publish(const struct agg_window *w);          /* FAST */
 int ble_stream_publish_slow(const struct ina228_sample *s);  /* SLOW (INA228) */
+void ble_stream_set_adv(bool on);   /* start/stop advertising (off in dark idle) */
 
 #endif /* BLE_STREAM_H_ */

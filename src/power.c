@@ -55,6 +55,11 @@ int power_batt_mv(void)
 	return s_batt_mv;
 }
 
+bool power_usb_present(void)
+{
+	return nrf_power_usbregstatus_vbusdet_get(NRF_POWER);
+}
+
 /* ---- POFCON: low-battery (VDDH) clean-shutdown ------------------------- */
 /* Largest VDDH threshold <= the requested mV (2.7-4.2 V in 0.1 V steps). */
 static nrf_power_pof_thrvddh_t vddh_thr(uint16_t mv)
