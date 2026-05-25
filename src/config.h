@@ -26,6 +26,8 @@ struct app_cfg {
 	bool     ts_require_sync;  /* refuse timestamped session until time synced    */
 	uint8_t  file_fmt;         /* enum file_fmt_kind                              */
 	uint16_t adv_idle_ms;      /* BLE advertising interval in connectable idle    */
+	bool     cal_enable;       /* auto-zero the fast channel against the INA228   */
+	uint16_t cal_tau_s;        /* offset-tracking time constant (s)               */
 };
 
 typedef void (*config_cb)(const char *key, const char *val, void *ctx);

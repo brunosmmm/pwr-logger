@@ -7,7 +7,9 @@
 #include "storage.h"
 #include "timebase.h"
 #include "ble_stream.h"
+#include "cal.h"
 
+#include <math.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 
@@ -33,6 +35,12 @@ static bool s_session; /* true = recording to SD; false = monitor-only */
 #define FAST_INTERCEPT_A (-(double)INA240_VREF_V / \
 	((double)INA240_GAIN * (double)INA240_SHUNT_OHMS))
 
+/* INA228 current LSB (A/LSB), matches ina228.c (IMAX / 2^19). */
+#define INA228_CURRENT_LSB_A ((double)INA228_IMAX_A / 524288.0)
+/* Fast window code spread above which we treat it as mid-transient and skip the
+ * cal update (the long tau already rejects transients; this is belt-and-braces). */
+#define CAL_STEADY_SPREAD 512
+
 /*
  * The contract: ALWAYS drain acq_msgq (feed the live view + return buffers to
  * the pool); persisting to SD is conditional on a session being open. This keeps
@@ -49,9 +57,12 @@ static void writer_fn(void *a, void *b, void *c)
 	uint64_t samples = 0;
 	int64_t t_report = k_uptime_get();
 	int64_t t_flush = t_report;
-	float fast_avg = 0.0f;   /* latest agg mean code, for fast-channel readout */
+	float fast_avg = 0.0f;   /* latest agg mean code (corrected), for the readout */
 	unsigned wins = 0;       /* agg windows taken / sec (BLE producer rate) */
 	unsigned nerr = 0;       /* bt_gatt_notify failures / sec (TX buffer drops) */
+	float fast_i_raw = 0.0f; /* latest RAW fast current (A), for the cal loop */
+	bool fast_steady = false;
+	int64_t t_cal = t_report;
 
 	while (s_running) {
 		struct acq_block blk;
@@ -59,8 +70,17 @@ static void writer_fn(void *a, void *b, void *c)
 		if (k_msgq_get(&acq_msgq, &blk, K_MSEC(100)) == 0) {
 			uint64_t t = timebase_extend(blk.t_capture);
 
-			agg_push(blk.samples, blk.count);           /* always: live view */
+			agg_push(blk.samples, blk.count);           /* RAW -> live view + cal */
 			if (s_session) {
+				/* Bake the INA228-referenced offset into the stored codes so
+				 * the SD data agrees with the precision channel (no metadata). */
+				int off = (int)lroundf(cal_offset_a() / (float)FAST_SLOPE_A_PER_CODE);
+
+				if (off != 0) {
+					for (uint16_t i = 0; i < blk.count; i++) {
+						blk.samples[i] = (int16_t)(blk.samples[i] - off);
+					}
+				}
 				tdms_write_fast(&s_tdms, blk.samples, blk.count, t);
 			}
 			samples += blk.count;
@@ -73,6 +93,15 @@ static void writer_fn(void *a, void *b, void *c)
 		       k_msgq_get(&ina228_msgq, &s, K_NO_WAIT) == 0) {
 			slow[slow_n++] = s;
 			ble_stream_publish_slow(&s);   /* live INA228 stream (throttled) */
+
+			/* Cross-calibrate the fast zero against the INA228 (same series
+			 * current). Slow EMA (cal_tau_s) tracks thermal drift only. */
+			int64_t tnow = k_uptime_get();
+			float i_ina = (float)(s.current_raw * INA228_CURRENT_LSB_A);
+
+			cal_update(fast_i_raw, i_ina, (float)(tnow - t_cal) / 1000.0f,
+				   fast_steady);
+			t_cal = tnow;
 		}
 
 		int64_t now = k_uptime_get();
@@ -101,9 +130,20 @@ static void writer_fn(void *a, void *b, void *c)
 		struct agg_window w;
 
 		if (agg_take(&w)) {
-			fast_avg = w.avg;
+			/* RAW fast current feeds the cal loop; the offset corrects the
+			 * window we publish so the live fast channel matches the INA228. */
+			fast_i_raw = (float)(FAST_SLOPE_A_PER_CODE * w.avg + FAST_INTERCEPT_A);
+			fast_steady = (w.max - w.min) < CAL_STEADY_SPREAD;
+
+			int off = (int)lroundf(cal_offset_a() / (float)FAST_SLOPE_A_PER_CODE);
+			struct agg_window wc = w;
+
+			wc.avg -= off;
+			wc.min -= off;
+			wc.max -= off;
+			fast_avg = wc.avg;
 			wins++;
-			if (ble_stream_publish(&w) < 0) {
+			if (ble_stream_publish(&wc) < 0) {
 				nerr++;
 			}
 		}

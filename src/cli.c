@@ -2,6 +2,7 @@
 #include "clock.h"
 #include "logctl.h"
 #include "power.h"
+#include "cal.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -40,6 +41,7 @@ static int cmd_status(const struct shell *sh, size_t argc, char **argv)
 	shell_print(sh, "state:  %s", logctl_state_name(logctl_state()));
 	shell_print(sh, "time:   %s (synced=%d)", b, clk_is_synced());
 	shell_print(sh, "uptime: %lld ms", k_uptime_get());
+	shell_print(sh, "fast cal offset: %d uA", (int)(cal_offset_a() * 1e6f));
 	return 0;
 }
 
