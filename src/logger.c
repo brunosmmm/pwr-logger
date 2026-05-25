@@ -49,6 +49,8 @@ static void writer_fn(void *a, void *b, void *c)
 	int64_t t_report = k_uptime_get();
 	int64_t t_flush = t_report;
 	float fast_avg = 0.0f;   /* latest agg mean code, for fast-channel readout */
+	unsigned wins = 0;       /* agg windows taken / sec (BLE producer rate) */
+	unsigned nerr = 0;       /* bt_gatt_notify failures / sec (TX buffer drops) */
 
 	while (s_running) {
 		struct acq_block blk;
@@ -85,10 +87,12 @@ static void writer_fn(void *a, void *b, void *c)
 			int fast_ua = (int)((FAST_SLOPE_A_PER_CODE * fast_avg +
 					     FAST_INTERCEPT_A) * 1e6);
 
-			LOG_INF("acq: %llu samples/s, %u drops [%s]  fast_I=%d uA (code %d)",
+			LOG_INF("acq: %llu samples/s, %u drops [%s]  fast_I=%d uA (code %d)  ble: wins=%u nerr=%u",
 				samples, acq_drops(), s_session ? "logging" : "monitor",
-				fast_ua, (int)fast_avg);
+				fast_ua, (int)fast_avg, wins, nerr);
 			samples = 0;
+			wins = 0;
+			nerr = 0;
 			t_report = now;
 		}
 
@@ -96,7 +100,10 @@ static void writer_fn(void *a, void *b, void *c)
 
 		if (agg_take(&w)) {
 			fast_avg = w.avg;
-			ble_stream_publish(&w);
+			wins++;
+			if (ble_stream_publish(&w) < 0) {
+				nerr++;
+			}
 		}
 	}
 }

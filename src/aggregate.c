@@ -9,7 +9,7 @@
  * "ready" at a time (overwritten if not taken before the next completes).
  */
 
-#define AGG_WINDOW_SAMPLES 2000u   /* 10 ms windows at 200 kSPS */
+#define AGG_WINDOW_SAMPLES 1000u   /* 50 ms windows at 20 kSPS -> ~20 Hz BLE live view */
 
 static int64_t  s_sum;
 static double   s_sumsq;
