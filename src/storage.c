@@ -18,6 +18,49 @@ static struct fs_mount_t mp = {
 	.mnt_point = MOUNT_POINT,
 };
 
+/*
+ * Write-combining buffer. The TDMS encoder issues many small/odd-sized writes
+ * (28 B lead-in, metadata, then a 16 KB raw block), which would land unaligned
+ * to the 512 B SD sector and force FatFs into slow read-modify-write on every
+ * block. We coalesce all writes into a sector-multiple buffer and only ever
+ * call fs_write() with whole sectors at a sector-aligned file offset, so FatFs
+ * takes its fast multi-sector disk_write() path. (f_expand() contiguous
+ * preallocation would also help but FF_USE_EXPAND is disabled upstream.)
+ */
+#define SD_SECTOR_SZ   512u
+#define WCOMBINE_SZ    (16u * SD_SECTOR_SZ)   /* 8 KB, multiple of sector */
+
+static uint8_t wbuf[WCOMBINE_SZ] __aligned(4);
+static size_t  wbuf_len;
+
+/* Write the whole-sector portion of wbuf, carrying the sub-sector tail. Keeps
+ * the file offset sector-aligned so the next fs_write stays on the fast path. */
+static int wbuf_flush_sectors(struct storage_file *f)
+{
+	size_t aligned = wbuf_len & ~(SD_SECTOR_SZ - 1);
+
+	if (aligned == 0) {
+		return 0;
+	}
+
+	ssize_t w = fs_write(&f->fp, wbuf, aligned);
+
+	if (w < 0) {
+		return (int)w;
+	}
+	if ((size_t)w != aligned) {
+		return -EIO;
+	}
+
+	size_t tail = wbuf_len - aligned;
+
+	if (tail) {
+		memmove(wbuf, wbuf + aligned, tail);
+	}
+	wbuf_len = tail;
+	return 0;
+}
+
 int storage_mount(void)
 {
 	int rc = fs_mount(&mp);
@@ -48,28 +91,61 @@ int storage_session_begin(struct storage_file *f, const char *name)
 		LOG_ERR("fs_open(%s) failed: %d", path, rc);
 		return rc;
 	}
-	/* TODO: f_expand() a contiguous extent here and track valid length so
-	 * writes avoid per-write FAT updates (REQUIREMENTS.md section 4). */
+	wbuf_len = 0;
 	LOG_INF("session file open: %s", path);
 	return 0;
 }
 
 int storage_write(struct storage_file *f, const void *buf, size_t len)
 {
-	ssize_t w = fs_write(&f->fp, buf, len);
+	const uint8_t *src = buf;
 
-	if (w < 0) {
-		return (int)w;
+	while (len) {
+		size_t space = WCOMBINE_SZ - wbuf_len;
+		size_t n = len < space ? len : space;
+
+		memcpy(wbuf + wbuf_len, src, n);
+		wbuf_len += n;
+		src += n;
+		len -= n;
+
+		if (wbuf_len == WCOMBINE_SZ) {
+			ssize_t w = fs_write(&f->fp, wbuf, WCOMBINE_SZ);
+
+			if (w < 0) {
+				return (int)w;
+			}
+			if ((size_t)w != WCOMBINE_SZ) {
+				return -EIO;
+			}
+			wbuf_len = 0;
+		}
 	}
-	return ((size_t)w == len) ? 0 : -EIO;
+	return 0;
 }
 
 int storage_sync(struct storage_file *f)
 {
+	/* Persist whole sectors only; the <512 B tail stays buffered so the file
+	 * offset remains sector-aligned (small, recoverable loss on power-cut). */
+	int rc = wbuf_flush_sectors(f);
+
+	if (rc) {
+		return rc;
+	}
 	return fs_sync(&f->fp);
 }
 
 int storage_session_end(struct storage_file *f)
 {
+	/* Final flush includes the partial last sector so the file is complete. */
+	if (wbuf_len) {
+		ssize_t w = fs_write(&f->fp, wbuf, wbuf_len);
+
+		if (w < 0) {
+			LOG_ERR("final flush failed: %d", (int)w);
+		}
+		wbuf_len = 0;
+	}
 	return fs_close(&f->fp);
 }
