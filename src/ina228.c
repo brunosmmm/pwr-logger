@@ -69,6 +69,15 @@ static int32_t read_20in24(uint8_t reg, bool is_signed)
 	return v;
 }
 
+/* 24-bit unsigned register (e.g. POWER) — uses the full 24 bits, no shift. */
+static uint32_t read_24(uint8_t reg)
+{
+	uint8_t b[3] = {0};
+
+	(void)reg_read(reg, b, 3);
+	return ((uint32_t)b[0] << 16) | ((uint32_t)b[1] << 8) | b[2];
+}
+
 static void rd_fn(void *a, void *b, void *c)
 {
 	ARG_UNUSED(a);
@@ -94,12 +103,15 @@ static void rd_fn(void *a, void *b, void *c)
 		int64_t now = k_uptime_get();
 
 		if (now - t_log >= 1000) {
-			float vbus = s.vbus_raw * VBUS_LSB_UV / 1000.0f;        /* mV */
-			float ma = s.power_raw * s_current_lsb * 1000.0f;       /* mA */
-			float tc = s.temp_raw * TEMP_LSB_mC / 1000.0f;         /* °C */
+			uint32_t pwr_reg = read_24(REG_POWER);                  /* POWER reg */
+			int vbus_uv = (int)(s.vbus_raw * VBUS_LSB_UV);          /* µV */
+			int i_ua = (int)(s.power_raw * s_current_lsb * 1e6f);   /* µA */
+			/* INA228 POWER LSB = 3.2 * CURRENT_LSB */
+			int p_uw = (int)(pwr_reg * 3.2f * s_current_lsb * 1e6f); /* µW */
+			int t_mc = (int)(s.temp_raw * TEMP_LSB_mC);             /* m°C */
 
-			LOG_INF("INA228: Vbus=%d mV  I=%d mA  T=%d C",
-				(int)vbus, (int)ma, (int)tc);
+			LOG_INF("INA228: Vbus=%d uV  I=%d uA  P=%d uW  T=%d mC",
+				vbus_uv, i_ua, p_uw, t_mc);
 			t_log = now;
 		}
 		k_sleep(K_MSEC(50)); /* matches the ~20 SPS conversion cadence */
