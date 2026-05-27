@@ -1,6 +1,7 @@
 #include "controls.h"
 #include "logctl.h"
 #include "display.h"
+#include "ui.h"
 
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
@@ -130,15 +131,28 @@ static void btn_install(struct btn *b, const struct gpio_dt_spec *spec,
 	gpio_add_callback(spec->port, &b->cb);
 }
 
-/* ---- REC: short = LOG_TOGGLE, long = POWEROFF --------------------------- */
+/* ---- REC: short = LOG_TOGGLE, long = ROTATE FILE ----------------------- *
+ * Phase 3 remap: long-press REC now rotates the TDMS file (was poweroff).
+ * Poweroff lives only on `pwr poweroff` shell + BLE PWR_OP_POWEROFF now --
+ * accepted UX trade documented in the plan. */
 static atomic_t s_rec_long_fired;
 
 static void rec_long_fn(struct k_work *w)
 {
 	ARG_UNUSED(w);
 	atomic_set(&s_rec_long_fired, 1);
-	LOG_INF("REC long-press -> poweroff");
-	logctl_post(EV_POWEROFF);
+	enum logctl_state st = logctl_state();
+	if (st == LS_LOGGING) {
+		LOG_INF("REC long-press -> rotate file");
+		atomic_set(&s_flash_ticks, ROTATE_FLASH_TICKS);
+		display_notice("rotated", ROTATE_NOTICE_MS);
+		logctl_post(EV_ROTATE);
+	} else {
+		LOG_INF("REC long-press -> rotate ignored (state=%s)",
+			logctl_state_name(st));
+		display_notice("logging only", 1500);
+	}
+	ui_kick();
 }
 static K_WORK_DELAYABLE_DEFINE(rec_long_work, rec_long_fn);
 
@@ -152,27 +166,38 @@ static void rec_edge(int level)
 		if (atomic_get(&s_rec_long_fired) == 0) {
 			LOG_INF("REC short-press -> toggle log");
 			logctl_post(EV_REC_TOGGLE);
+			ui_kick();
 		}
 	}
 }
 
-/* ---- ROTATE: short press only, also triggers LED triple-flash ----------- */
+/* ---- ROTATE: short = next UI page; long = clear HOLD ------------------- *
+ * Phase 3 remap: ROTATE short used to attempt file rotation on LS_LOGGING
+ * and noop otherwise; that's now REC-long. ROTATE is dedicated to UI nav. */
+static atomic_t s_rotate_long_fired;
+
+static void rotate_long_fn(struct k_work *w)
+{
+	ARG_UNUSED(w);
+	atomic_set(&s_rotate_long_fired, 1);
+	LOG_INF("ROTATE long-press -> clear HOLD on current page");
+	ui_hold_clear_current();
+	display_notice("hold cleared", 1000);
+	ui_kick();
+}
+static K_WORK_DELAYABLE_DEFINE(rotate_long_work, rotate_long_fn);
+
 static void rotate_edge(int level)
 {
-	if (level != 1) {
-		return;
-	}
-	enum logctl_state st = logctl_state();
-	LOG_INF("ROTATE press (state=%s)", logctl_state_name(st));
-	if (st == LS_LOGGING) {
-		atomic_set(&s_flash_ticks, ROTATE_FLASH_TICKS);
-		display_notice("rotated", ROTATE_NOTICE_MS);
-		logctl_post(EV_ROTATE);
-	} else if (st == LS_OFFLOAD) {
-		display_notice("offload locked", 1500);
+	if (level == 1) {
+		atomic_set(&s_rotate_long_fired, 0);
+		k_work_schedule(&rotate_long_work, K_MSEC(REC_LONG_MS));
 	} else {
-		/* STOPPED / IDLE / SHIP -- rotate is meaningful only mid-log. */
-		display_notice("logging only", 1500);
+		k_work_cancel_delayable(&rotate_long_work);
+		if (atomic_get(&s_rotate_long_fired) == 0) {
+			LOG_INF("ROTATE short-press -> next page");
+			ui_next_page();
+		}
 	}
 }
 
@@ -181,6 +206,7 @@ static void offload_edge(int level)
 {
 	LOG_INF("OFFLOAD switch -> %s", level ? "ON" : "OFF");
 	logctl_post(level ? EV_OFFLOAD_ON : EV_OFFLOAD_OFF);
+	ui_kick();
 }
 
 /* ---- init --------------------------------------------------------------- */
