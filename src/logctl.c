@@ -91,9 +91,14 @@ static void enter_idle_finalize(void)
 static void idle_finalize_fn(struct k_work *w)
 {
 	ARG_UNUSED(w);
-	/* abort if USB came back or we got into LOGGING/IDLE another way */
-	if (s_usb || s_state == LS_LOGGING || s_state == LS_IDLE ||
-	    s_state == LS_SHIP) {
+	/* All other transitions cancel this work via cancel_pending_idle();
+	 * by the time the timer fires, the only thing that could legitimately
+	 * abort is USB coming back -- and that path also cancels us, so this
+	 * is just a belt-and-braces guard. Specifically do NOT gate on s_state
+	 * being LS_LOGGING: stop_recording() -> enter_idle() leaves s_state as
+	 * LS_LOGGING through the warning window (we don't transition until
+	 * finalize), and gating on it here would silently skip the rail cut. */
+	if (s_usb) {
 		display_notice(NULL, 0);
 		return;
 	}
@@ -113,9 +118,8 @@ static void enter_idle(void)        /* battery, not recording: go dark */
 
 static void cancel_pending_idle(void)
 {
-	if (k_work_cancel_delayable(&idle_finalize_work) != 0) {
-		display_notice(NULL, 0);
-	}
+	k_work_cancel_delayable(&idle_finalize_work);
+	display_notice(NULL, 0);
 }
 
 /* Stop recording -> the not-recording state appropriate for USB presence. */
