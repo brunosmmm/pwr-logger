@@ -5,6 +5,7 @@
 #include "clock.h"
 #include "power.h"
 #include "ble_stream.h"
+#include "display.h"
 
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
@@ -67,14 +68,54 @@ static void to_logging(void)
 	LOG_INF("-> LOGGING");
 }
 
-static void enter_idle(void)        /* battery, not recording: go dark */
+/* Two-phase IDLE entry: phase 1 shows a notice on the display + schedules a
+ * delayed finalize so the operator gets a visible heads-up before the rail
+ * cuts. Phase 2 (`idle_finalize_fn`) does the actual unmount + rail-off.
+ * EV_USB_ON during the warning window aborts the pending shutdown. */
+#define IDLE_WARN_MS 3000
+
+static void idle_finalize_fn(struct k_work *w);
+static K_WORK_DELAYABLE_DEFINE(idle_finalize_work, idle_finalize_fn);
+
+static void enter_idle_finalize(void)
 {
 	(void)storage_unmount();         /* SD loses power with the rail */
 	ble_stream_set_adv(config_get()->idle_ble);
-	power_rail(false);               /* cut INA240/INA228/SD */
+	display_set_powered(false);      /* render thread stops before rail cuts */
+	power_rail(false);               /* cut INA240/INA228/SD/display */
 	autooff_arm();
 	s_state = LS_IDLE;
 	LOG_INF("-> IDLE (rail off, ble=%d, clock alive)", config_get()->idle_ble);
+}
+
+static void idle_finalize_fn(struct k_work *w)
+{
+	ARG_UNUSED(w);
+	/* abort if USB came back or we got into LOGGING/IDLE another way */
+	if (s_usb || s_state == LS_LOGGING || s_state == LS_IDLE ||
+	    s_state == LS_SHIP) {
+		display_notice(NULL, 0);
+		return;
+	}
+	enter_idle_finalize();
+}
+
+static void enter_idle(void)        /* battery, not recording: go dark */
+{
+	if (IDLE_WARN_MS > 0) {
+		display_notice("powering off", IDLE_WARN_MS);
+		LOG_INF("-> IDLE in %d ms", IDLE_WARN_MS);
+		k_work_schedule(&idle_finalize_work, K_MSEC(IDLE_WARN_MS));
+	} else {
+		enter_idle_finalize();
+	}
+}
+
+static void cancel_pending_idle(void)
+{
+	if (k_work_cancel_delayable(&idle_finalize_work) != 0) {
+		display_notice(NULL, 0);
+	}
 }
 
 /* Stop recording -> the not-recording state appropriate for USB presence. */
@@ -100,6 +141,7 @@ static void wake_idle(void)         /* USB plugged (or REC) -> come back up */
 {
 	autooff_cancel();
 	power_rail(true);
+	display_set_powered(true);       /* SSD1306 re-init: rail just came back */
 	ble_stream_set_adv(true);
 	power_batt_sample();
 	s_state = LS_STOPPED;
@@ -141,9 +183,11 @@ static void handle(enum logctl_event ev)
 {
 	switch (ev) {
 	case EV_REC_TOGGLE:
+		cancel_pending_idle();
 		(s_state == LS_LOGGING) ? stop_recording() : to_logging();
 		break;
 	case EV_LOG_START:
+		cancel_pending_idle();
 		to_logging();
 		break;
 	case EV_LOG_STOP:
@@ -155,18 +199,21 @@ static void handle(enum logctl_event ev)
 		}
 		break;
 	case EV_OFFLOAD_ON:
+		cancel_pending_idle();
 		to_offload();
 		break;
 	case EV_OFFLOAD_OFF:
 		to_logging();            /* resume logging on offload exit */
 		break;
 	case EV_POWEROFF:
+		cancel_pending_idle();
 		to_ship();
 		break;
 	case EV_USB_ON:
 		s_usb = true;
+		cancel_pending_idle();   /* aborted shutdown if we were in the warn window */
 		if (s_state == LS_IDLE) {
-			wake_idle();
+			wake_idle();         /* full re-wake if we already finalized */
 		}
 		break;
 	case EV_USB_OFF:
