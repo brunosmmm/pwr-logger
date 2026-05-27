@@ -178,31 +178,49 @@ static void render(void)
 static atomic_t s_powered = ATOMIC_INIT(1);
 
 /* Transient overlay shown by the render thread in place of the normal
- * I/V/P layout (e.g. "powering off in 3 s"). Active when `s_notice_until_ms`
- * is in the future (k_uptime_get_32() reference). */
-static uint32_t s_notice_until_ms;
-static char     s_notice_msg[20];
+ * I/V/P layout (e.g. "powering off"). Writers (logctl, system workqueue
+ * via controls) and reader (display thread) all touch these fields, so
+ * accesses are serialized by `s_notice_lock`. Without the lock the
+ * reader could pass cfb_print() a half-rewritten string -- one of its
+ * mid-rewrite bytes can fall outside the font's char range, producing a
+ * huge index in the glyph table -> faulting load -> the display thread
+ * gets silently aborted by the fault handler while everything else
+ * keeps running. (Observed once after ~15 min of stop/offload/resume
+ * cycles; see the parallel-agent root-cause analysis in commit msg.) */
+static struct k_mutex s_notice_lock;
+static uint32_t       s_notice_until_ms;
+static char           s_notice_msg[20];
 
 void display_notice(const char *msg, uint32_t duration_ms)
 {
+	k_mutex_lock(&s_notice_lock, K_FOREVER);
 	if (duration_ms == 0 || msg == NULL) {
 		s_notice_until_ms = 0;
-		return;
+	} else {
+		strncpy(s_notice_msg, msg, sizeof(s_notice_msg) - 1);
+		s_notice_msg[sizeof(s_notice_msg) - 1] = '\0';
+		s_notice_until_ms = k_uptime_get_32() + duration_ms;
 	}
-	strncpy(s_notice_msg, msg, sizeof(s_notice_msg) - 1);
-	s_notice_msg[sizeof(s_notice_msg) - 1] = '\0';
-	s_notice_until_ms = k_uptime_get_32() + duration_ms;
+	k_mutex_unlock(&s_notice_lock);
 }
 
 static bool render_notice_if_active(void)
 {
-	uint32_t now = k_uptime_get_32();
-	int32_t remaining = (int32_t)(s_notice_until_ms - now);
-	if (s_notice_until_ms == 0 || remaining <= 0) {
+	char     local_msg[sizeof(s_notice_msg)];
+	uint32_t until;
+
+	k_mutex_lock(&s_notice_lock, K_FOREVER);
+	until = s_notice_until_ms;
+	memcpy(local_msg, s_notice_msg, sizeof(local_msg));
+	k_mutex_unlock(&s_notice_lock);
+
+	local_msg[sizeof(local_msg) - 1] = '\0';   /* belt-and-braces */
+	int32_t remaining = (int32_t)(until - k_uptime_get_32());
+	if (until == 0 || remaining <= 0) {
 		return false;
 	}
 	cfb_framebuffer_clear(disp, false);
-	cfb_print(disp, s_notice_msg, 0, s_fh);   /* y=16, in the blue area */
+	cfb_print(disp, local_msg, 0, s_fh);
 	cfb_framebuffer_finalize(disp);
 	return true;
 }
@@ -267,6 +285,7 @@ void display_init(void)
 		LOG_ERR("cfb init failed");
 		return;
 	}
+	k_mutex_init(&s_notice_lock);
 	display_blanking_off(disp);
 	cfb_framebuffer_set_font(disp, 0);
 	if (cfb_get_font_size(disp, 0, &fw, &s_fh) != 0 || s_fh == 0) {
