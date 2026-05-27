@@ -49,7 +49,21 @@ LOG_MODULE_REGISTER(tdms, LOG_LEVEL_INF);
 /* one NI timestamp (16 B) + i32 vbus/vshunt/power + i16 temp, per record */
 #define SLOW_REC_BYTES (16u + 4u + 4u + 4u + 4u + 2u) /* t,vbus,vshunt,current,power,temp */
 
-static uint8_t s_meta[1024];
+/* INA228 datasheet scaling constants (per code -> SI). VBUS_LSB and TEMP_LSB
+ * are silicon fixed; VSHUNT_LSB depends on the ADCRANGE bit (we set ADCRANGE=1
+ * in ina228.c -> 78.125 nV/code). CURRENT_LSB / POWER_LSB are programmable via
+ * SHUNT_CAL; we set CURRENT_LSB = INA228_IMAX_A / 2^19 in firmware. By baking
+ * these into NI Linear-Scale properties on each slow channel below, consumers
+ * (npTDMS, LabVIEW, MATLAB) get SI values directly with no extra knowledge. */
+#define INA228_VBUS_LSB_V    (195.3125e-6)
+#define INA228_VSHUNT_LSB_V  (78.125e-9)
+#define INA228_TEMP_LSB_C    (7.8125e-3)
+#define INA228_CURRENT_LSB_A ((double)INA228_IMAX_A / 524288.0)
+#define INA228_POWER_LSB_W   (3.2 * INA228_CURRENT_LSB_A)
+
+/* Bumped from 1024 to 2048 -- the slow-channel full meta now carries 5
+ * properties per channel (unit_string + 4 NI scale fields) instead of 1. */
+static uint8_t s_meta[2048];
 static uint8_t s_slow[TDMS_SLOW_MAX * SLOW_REC_BYTES];
 
 /* ---- little-endian byte-buffer builder --------------------------------- */
@@ -223,16 +237,21 @@ static size_t meta_fast_full(struct tdms_writer *w, uint8_t *out, size_t cap,
 
 	b_u32(&b, 3);   /* root + group + channel */
 
-	/* root "/" : session/front-end properties for traceability */
+	/* root "/" : session/front-end properties for traceability. Format v2
+	 * adds NI Linear Scale properties to each slow channel (so reads come
+	 * out in SI) and exposes ina228_imax_a + ina228_current_lsb_a as
+	 * documentation -- the scales themselves are on the channels. */
 	b_str(&b, "/");
 	b_u32(&b, NO_RAW_DATA);
-	b_u32(&b, 10);
-	p_i32(&b, "pwrlog_format_version", 1);
+	b_u32(&b, 12);
+	p_i32(&b, "pwrlog_format_version", 2);
 	p_i32(&b, "master_clock_hz", (int32_t)MASTER_CLOCK_HZ);
 	p_f64(&b, "ina240_gain", INA240_GAIN);
 	p_f64(&b, "ina240_vref_v", INA240_VREF_V);
 	p_f64(&b, "ina240_shunt_ohms", INA240_SHUNT_OHMS);
 	p_f64(&b, "ina228_shunt_ohms", INA228_SHUNT_OHMS);
+	p_f64(&b, "ina228_imax_a", (double)INA228_IMAX_A);
+	p_f64(&b, "ina228_current_lsb_a", INA228_CURRENT_LSB_A);
 	p_f64(&b, "adc_vfull_scale_v", ADC_VFULL_SCALE_V);
 	p_i32(&b, "adc_bits", (int32_t)ADC_BITS);
 	p_str(&b, "session_start_utc", iso);
@@ -273,6 +292,25 @@ static size_t meta_fast_relist(uint8_t *out, size_t cap, uint16_t n)
 	return b.ovf ? 0 : b.len;
 }
 
+/* Emit a non-timestamp slow channel: path + raw-index + optional NI Linear
+ * Scale (intercept=0) so the on-disk codes are auto-converted to SI on read.
+ * When `with_props` is false this is a re-list (no metadata) -- scale
+ * properties only carry on the first "full" emission per session. */
+static void slow_scaled_channel(struct buf *b, const char *path, uint32_t dtype,
+				size_t n, const char *unit, double slope, bool with_props)
+{
+	b_str(b, path);
+	b_raw_index(b, dtype, n);
+	b_u32(b, with_props ? 5 : 0);
+	if (with_props) {
+		p_str(b, "unit_string", unit);
+		p_i32(b, "NI_Number_Of_Scales", 1);
+		p_str(b, "NI_Scale[0]_Scale_Type", "Linear");
+		p_f64(b, "NI_Scale[0]_Linear_Slope", slope);
+		p_f64(b, "NI_Scale[0]_Linear_Y_Intercept", 0.0);
+	}
+}
+
 static void slow_channels(struct buf *b, size_t n, bool with_props)
 {
 	/* channel order here defines the raw-data order in the segment */
@@ -280,40 +318,11 @@ static void slow_channels(struct buf *b, size_t n, bool with_props)
 	b_raw_index(b, TDS_TIMESTAMP, n);
 	b_u32(b, 0);
 
-	b_str(b, "/'slow'/'vbus'");
-	b_raw_index(b, TDS_I32, n);
-	b_u32(b, with_props ? 1 : 0);
-	if (with_props) {
-		p_str(b, "unit_string", "V_raw");
-	}
-
-	b_str(b, "/'slow'/'vshunt'");
-	b_raw_index(b, TDS_I32, n);
-	b_u32(b, with_props ? 1 : 0);
-	if (with_props) {
-		p_str(b, "unit_string", "V_raw");
-	}
-
-	b_str(b, "/'slow'/'current'");
-	b_raw_index(b, TDS_I32, n);
-	b_u32(b, with_props ? 1 : 0);
-	if (with_props) {
-		p_str(b, "unit_string", "A_raw");
-	}
-
-	b_str(b, "/'slow'/'power'");
-	b_raw_index(b, TDS_I32, n);
-	b_u32(b, with_props ? 1 : 0);
-	if (with_props) {
-		p_str(b, "unit_string", "W_raw");
-	}
-
-	b_str(b, "/'slow'/'temp'");
-	b_raw_index(b, TDS_I16, n);
-	b_u32(b, with_props ? 1 : 0);
-	if (with_props) {
-		p_str(b, "unit_string", "degC_raw");
-	}
+	slow_scaled_channel(b, "/'slow'/'vbus'",    TDS_I32, n, "V",   INA228_VBUS_LSB_V,    with_props);
+	slow_scaled_channel(b, "/'slow'/'vshunt'",  TDS_I32, n, "V",   INA228_VSHUNT_LSB_V,  with_props);
+	slow_scaled_channel(b, "/'slow'/'current'", TDS_I32, n, "A",   INA228_CURRENT_LSB_A, with_props);
+	slow_scaled_channel(b, "/'slow'/'power'",   TDS_I32, n, "W",   INA228_POWER_LSB_W,   with_props);
+	slow_scaled_channel(b, "/'slow'/'temp'",    TDS_I16, n, "degC", INA228_TEMP_LSB_C,   with_props);
 }
 
 static size_t meta_slow(uint8_t *out, size_t cap, size_t n, bool full)

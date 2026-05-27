@@ -1,4 +1,10 @@
-# pwrctl host CLI dependencies
+# Host tools dependencies.
+#
+# pwrctl.py    -- device control + live monitor
+# pwranalyze.py -- TDMS file inspector / stats / plot / export
 rich
 pyserial
 bleak
+nptdms
+numpy
+matplotlib   # optional, only required for `pwranalyze plot` and `pwranalyze fft`
