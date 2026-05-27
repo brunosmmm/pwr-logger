@@ -13,7 +13,11 @@ LOG_MODULE_REGISTER(timebase, LOG_LEVEL_INF);
  * wired to other CC channels in a later increment.)
  */
 #define MASTER_TIMER NRF_TIMER2
-#define READ_CC      NRF_TIMER_CC_CHANNEL5
+/* nRF52840 TIMER2 has CC0..CC3 only (4 channels). CC4/CC5 exist on TIMER3/4
+ * but not here -- accessing them silently returns 0, which made every
+ * t_capture / wf_start_time / slow timestamp read as zero. Use CC3 and leave
+ * CC0..CC2 free for future PPI captures (SAADC.END, INA228 CNVR). */
+#define READ_CC      NRF_TIMER_CC_CHANNEL3
 
 static uint32_t s_last; /* last captured low word (for 32->64 extension) */
 static uint32_t s_high; /* high word, bumped on wrap */

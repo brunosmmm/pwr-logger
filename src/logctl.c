@@ -188,6 +188,15 @@ static void handle(enum logctl_event ev)
 	switch (ev) {
 	case EV_REC_TOGGLE:
 		cancel_pending_idle();
+		if (s_state == LS_OFFLOAD) {
+			/* OFFLOAD is a maintained-switch state; a momentary
+			 * button must not override it (and starting LOGGING
+			 * would race the MSC host for the SD). User must flip
+			 * the switch out of OFFLOAD first. */
+			LOG_INF("REC ignored: OFFLOAD switch engaged");
+			display_notice("offload locked", 1500);
+			break;
+		}
 		(s_state == LS_LOGGING) ? stop_recording() : to_logging();
 		break;
 	case EV_LOG_START:

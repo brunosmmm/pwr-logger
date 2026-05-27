@@ -113,6 +113,12 @@ static void rd_fn(void *a, void *b, void *c)
 
 		(void)k_msgq_put(&ina228_msgq, &s, K_NO_WAIT);
 
+		/* Publish to the cosmetic-reader cache (display, shell `pwr
+		 * status`). Plain assignment -- the read-side accepts torn
+		 * reads ("benign torn-read risk; cosmetic only"). */
+		s_last = s;
+		s_have_last = true;
+
 		int64_t now = k_uptime_get();
 
 		if (now - t_log >= 1000) {

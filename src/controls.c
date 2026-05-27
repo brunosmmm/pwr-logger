@@ -1,5 +1,6 @@
 #include "controls.h"
 #include "logctl.h"
+#include "display.h"
 
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
@@ -20,7 +21,23 @@ static const struct gpio_dt_spec led_g    = GPIO_DT_SPEC_GET(ZU, led_gpios);
 #define DEBOUNCE_MS         20      /* settle time after any edge */
 #define REC_LONG_MS       2000      /* hold REC this long -> poweroff */
 #define LED_TICK_MS         50      /* base period for the LED pattern engine */
-#define ROTATE_FLASH_TICKS  12      /* 12 * 50 ms = 600 ms; 3 on/off pairs */
+#define ROTATE_NOTICE_MS  1000      /* display banner duration on rotate */
+
+/* ROTATE ack pattern -- a leading 200 ms pause, three crisp 100 ms ON pulses
+ * each separated by 100 ms OFF, and a 100 ms tail. ~850 ms total. Designed
+ * to be unmistakable against every base state: starts with a long-enough
+ * OFF gap to break the solid LOGGING baseline, and uses tight on/off cadence
+ * (5 Hz) that doesn't match STOPPED (1 Hz) or OFFLOAD (2.5 Hz). */
+static const uint8_t ack_pat[] = {
+	0, 0, 0, 0,   /* 200 ms OFF (pause)  */
+	1, 1,         /* 100 ms ON  (flash 1) */
+	0, 0,         /* 100 ms OFF           */
+	1, 1,         /* 100 ms ON  (flash 2) */
+	0, 0,         /* 100 ms OFF           */
+	1, 1,         /* 100 ms ON  (flash 3) */
+	0, 0,         /* 100 ms OFF (tail)    */
+};
+#define ROTATE_FLASH_TICKS ((int)ARRAY_SIZE(ack_pat))
 
 /* ---- LED pattern engine -------------------------------------------------- */
 /* A 50 ms tick reads logctl_state() and an optional override (e.g. ROTATE
@@ -39,10 +56,10 @@ static void led_tick_fn(struct k_work *w)
 	bool on;
 	atomic_val_t flash = atomic_get(&s_flash_ticks);
 
-	if (flash > 0) {
-		/* triple flash: 100 ms on / 100 ms off, three pairs.
-		 * Each "phase" is 2 ticks (=100 ms). Phases alternate on/off. */
-		on = (((ROTATE_FLASH_TICKS - flash) / 2) & 1u) == 0u;
+	if (flash > 0 && flash <= ROTATE_FLASH_TICKS) {
+		/* Play back ack_pat[] from start to end. `flash` counts down,
+		 * so index = N - flash. */
+		on = ack_pat[ROTATE_FLASH_TICKS - flash];
 		atomic_dec(&s_flash_ticks);
 	} else {
 		switch (logctl_state()) {
@@ -142,10 +159,20 @@ static void rec_edge(int level)
 /* ---- ROTATE: short press only, also triggers LED triple-flash ----------- */
 static void rotate_edge(int level)
 {
-	if (level == 1) {
-		LOG_INF("ROTATE press");
+	if (level != 1) {
+		return;
+	}
+	enum logctl_state st = logctl_state();
+	LOG_INF("ROTATE press (state=%s)", logctl_state_name(st));
+	if (st == LS_LOGGING) {
 		atomic_set(&s_flash_ticks, ROTATE_FLASH_TICKS);
+		display_notice("rotated", ROTATE_NOTICE_MS);
 		logctl_post(EV_ROTATE);
+	} else if (st == LS_OFFLOAD) {
+		display_notice("offload locked", 1500);
+	} else {
+		/* STOPPED / IDLE / SHIP -- rotate is meaningful only mid-log. */
+		display_notice("logging only", 1500);
 	}
 }
 

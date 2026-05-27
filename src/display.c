@@ -201,13 +201,8 @@ static bool render_notice_if_active(void)
 	if (s_notice_until_ms == 0 || remaining <= 0) {
 		return false;
 	}
-	int sec_left = (remaining + 999) / 1000;
-	char ln[16];
-	snprintf(ln, sizeof(ln), "in %d s", sec_left);
-
 	cfb_framebuffer_clear(disp, false);
-	cfb_print(disp, s_notice_msg, 0, 0);          /* yellow header */
-	cfb_print(disp, ln,           0, s_fh * 2);   /* y=32, centered-ish */
+	cfb_print(disp, s_notice_msg, 0, s_fh);   /* y=16, in the blue area */
 	cfb_framebuffer_finalize(disp);
 	return true;
 }
