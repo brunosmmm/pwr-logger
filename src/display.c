@@ -4,6 +4,7 @@
 
 #include "ui.h"
 #include "config.h"
+#include "power.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -90,12 +91,13 @@ static bool render_notice_if_active(void)
 	return true;
 }
 
-/* Idle-blank state. When ui_idle_ms() > cfg.display_sleep_s * 1000 the panel
- * is put into blanking (SSD1306 sleep-display, AEh command); on the first
- * tick that ui_idle_ms() drops below the threshold (i.e. a button was just
- * pressed) we un-blank and force a fresh render. This is separate from
- * display_set_powered() -- the chip keeps its rail and GDDRAM, just stops
- * driving the OLED segments. Wakeup is immediate. */
+/* Idle-blank state. When BATTERY-POWERED and ui_idle_ms() exceeds
+ * cfg.display_sleep_s * 1000, the panel goes into blanking (SSD1306 AEh
+ * sleep-display command); first tick after a button press unblanks and
+ * resumes rendering. On USB power there is no point blanking -- the host
+ * is feeding unlimited current -- so the feature is forcibly disabled.
+ * Distinct from display_set_powered(): the chip keeps its rail + GDDRAM
+ * during blanking; only the on-segment driver is suspended. */
 static bool s_blanked;
 
 static void disp_loop(void *a, void *b, void *c)
@@ -106,13 +108,14 @@ static void disp_loop(void *a, void *b, void *c)
 	while (1) {
 		if (atomic_get(&s_powered)) {
 			uint16_t sleep_s = config_get()->display_sleep_s;
-			bool should_blank = (sleep_s > 0) &&
+			bool on_usb = power_usb_present();
+			bool should_blank = !on_usb && (sleep_s > 0) &&
 					    (ui_idle_ms() > (int64_t)sleep_s * 1000);
 
 			if (should_blank && !s_blanked) {
 				display_blanking_on(disp);
 				s_blanked = true;
-				LOG_INF("display: blanked (idle %us)", sleep_s);
+				LOG_INF("display: blanked (idle %us, on battery)", sleep_s);
 			} else if (!should_blank && s_blanked) {
 				display_blanking_off(disp);
 				s_blanked = false;
