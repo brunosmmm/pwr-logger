@@ -9,14 +9,14 @@ The on-card TDMS schema (firmware-side: src/tdms.c):
                    session_start_utc, time_synced
   /fast/i        : float64 (NI linear scale applied), 20 kSPS, wf_increment=50us
   /slow/t        : datetime64[us]  (NI timestamp -- one per slow record)
-  /slow/vbus     : V (NI linear scale, v2 files) / int32 raw (v1)
-  /slow/vshunt   : V                                          / int32 raw
-  /slow/current  : A                                          / int32 raw
-  /slow/power    : W                                          / int32 raw
-  /slow/temp     : degC                                       / int16 raw
+  /slow/vbus     : V    (NI linear scale on the channel)
+  /slow/vshunt   : V
+  /slow/current  : A
+  /slow/power    : W
+  /slow/temp     : degC
 
-For v1 files (no scale properties), we fall back to the INA228 datasheet
-LSBs below. For v2+, npTDMS auto-applies the per-channel scale on read.
+Requires pwrlog_format_version >= 2 (slow channels carry their own NI
+Linear-Scale properties). Older files would need to be re-recorded.
 
 `Session.load(path)` returns SI-scaled numpy arrays for both channels with
 elapsed-seconds time axes (relative to session_start_utc) so fast and slow
@@ -53,18 +53,7 @@ except ImportError:
 
 console = Console()
 
-# INA228 fallback scaling for v1 files only -- v2+ embeds NI Linear scales on
-# every slow channel so npTDMS auto-applies them on read. If you bump the
-# firmware INA228_IMAX_A (src/app_config.h) and need to re-read old v1 files
-# with the new IMAX, change INA228_IMAX_A_V1_FALLBACK below.
-INA228_IMAX_A_V1_FALLBACK = 20.0
-_V1_LSBS = {
-    "vbus":    195.3125e-6,                                # V per code
-    "vshunt":  78.125e-9,                                  # V per code (ADCRANGE=1)
-    "current": INA228_IMAX_A_V1_FALLBACK / (1 << 19),      # A per code
-    "power":   3.2 * INA228_IMAX_A_V1_FALLBACK / (1 << 19),# W per code
-    "temp":    7.8125e-3,                                  # °C per code
-}
+MIN_FORMAT_VERSION = 2
 
 
 # ---- core data model ------------------------------------------------------
@@ -104,9 +93,14 @@ class Session:
         s.fast_i = ch_fast[:]
         s.fs = 1.0 / float(ch_fast.properties["wf_increment"])
 
-        # Slow channel: read SI directly (v2 -- NI scale on channel) or
-        # apply the v1 fallback LSBs. The version check trusts the file
-        # property; v1 files predate the scale-on-channel design.
+        ver = int(s.props.get("pwrlog_format_version", 0))
+        if ver < MIN_FORMAT_VERSION:
+            sys.exit(f"{path}: pwrlog_format_version={ver}, need >= "
+                     f"{MIN_FORMAT_VERSION}. Re-record with current firmware.")
+
+        # Slow time axis: relative to session_start, in seconds (float64).
+        # Slow channel values: NI Linear scales on each channel mean a normal
+        # read returns float64 in SI units already.
         slow_t_dt = tdms["slow"]["t"][:]   # datetime64[us] absolute
         if s.session_start is not None and slow_t_dt.size:
             delta = (slow_t_dt - s.session_start).astype("timedelta64[us]").astype(np.int64)
@@ -114,17 +108,10 @@ class Session:
         else:
             s.slow_t = np.arange(slow_t_dt.size, dtype=np.float64) / 20.0
 
-        ver = int(s.props.get("pwrlog_format_version", 1))
-        if ver >= 2:
-            s.slow_v    = tdms["slow"]["vbus"][:].astype(np.float64)
-            s.slow_i    = tdms["slow"]["current"][:].astype(np.float64)
-            s.slow_p    = tdms["slow"]["power"][:].astype(np.float64)
-            s.slow_temp = tdms["slow"]["temp"][:].astype(np.float64)
-        else:
-            s.slow_v    = tdms["slow"]["vbus"].read_data(scaled=False).astype(np.float64) * _V1_LSBS["vbus"]
-            s.slow_i    = tdms["slow"]["current"].read_data(scaled=False).astype(np.float64) * _V1_LSBS["current"]
-            s.slow_p    = tdms["slow"]["power"].read_data(scaled=False).astype(np.float64) * _V1_LSBS["power"]
-            s.slow_temp = tdms["slow"]["temp"].read_data(scaled=False).astype(np.float64) * _V1_LSBS["temp"]
+        s.slow_v    = tdms["slow"]["vbus"][:].astype(np.float64)
+        s.slow_i    = tdms["slow"]["current"][:].astype(np.float64)
+        s.slow_p    = tdms["slow"]["power"][:].astype(np.float64)
+        s.slow_temp = tdms["slow"]["temp"][:].astype(np.float64)
         return s
 
     @property
