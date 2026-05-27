@@ -8,6 +8,8 @@
 #include "timebase.h"
 #include "ble_stream.h"
 #include "cal.h"
+#include "config.h"
+#include "stats.h"
 
 #include <math.h>
 #include <zephyr/kernel.h>
@@ -185,6 +187,12 @@ int logger_start(void)
 	} else {
 		LOG_WRN("no SD session -> MONITOR mode (live view only)");
 	}
+
+	/* Session-start side effects on the stats engine, all opt-in via config. */
+	const struct app_cfg *cfg = config_get();
+	if (cfg->stats_reset_on_start)  { stats_session_reset(); }
+	if (cfg->hold_reset_on_start)   { stats_hold_clear(STATS_CH_ALL); }
+	if (cfg->energy_reset_on_start) { stats_energy_clear(); }
 
 	s_running = true;
 	writer_tid = k_thread_create(&writer_thread, writer_stack,

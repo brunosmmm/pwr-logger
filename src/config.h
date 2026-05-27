@@ -29,6 +29,20 @@ struct app_cfg {
 	bool     cal_enable;       /* auto-zero the fast channel against the INA228   */
 	uint16_t cal_tau_s;        /* offset-tracking time constant (s)               */
 	uint16_t stats_window_s;   /* rolling-stats window length (s), 1..60          */
+	/* UI / multi-page state */
+	uint8_t  ui_default_page;  /* boot default page (0..6 = LIVE..SYSTEM)         */
+	uint16_t ui_timeout_s;     /* auto-return to default after idle s; 0 = never  */
+	uint8_t  ui_cycle_s;       /* PEAKS/HOLD channel auto-cycle period (s)        */
+	/* Stats engine policies */
+	bool     stats_reset_on_start; /* clear rolling buffers on logger_start       */
+	bool     hold_reset_on_start;  /* clear HOLD latches on logger_start          */
+	bool     energy_reset_on_start;/* clear energy accumulators on logger_start   */
+	/* Display sleep */
+	uint16_t display_sleep_s;  /* blank panel after N s idle; 0 = always on       */
+	/* SD config file (Phase 5) */
+	bool     cfgfile_load_on_boot; /* read /SD:/pwr.cfg into NVS on boot          */
+	/* Reserved: T_F32 example, also used by future alert thresholds */
+	float    alerts_i_max_a;   /* fast-channel current limit (A), |I| over -> notify */
 };
 
 typedef void (*config_cb)(const char *key, const char *val, void *ctx);

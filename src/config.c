@@ -10,22 +10,26 @@
 
 LOG_MODULE_REGISTER(config, LOG_LEVEL_INF);
 
-#define CFG_VERSION 4
+#define CFG_VERSION 5
 #define CFG_KEY     "pwr/cfg"
 #define CFG_BLOB    CFG_KEY "/blob"
 
 static struct app_cfg g_cfg;
 
-enum cfg_type { T_BOOL, T_U8, T_U16, T_U32 };
+enum cfg_type { T_BOOL, T_U8, T_U16, T_U32, T_F32 };
 
 struct cfg_item {
 	const char   *key;
 	enum cfg_type type;
 	size_t        off;
-	uint32_t      def;
+	union {
+		uint32_t u;
+		float    f;
+	} def;
 };
 
-#define ITEM(k, t, field, d) { k, t, offsetof(struct app_cfg, field), d }
+#define ITEM(k, t, field, d)   { k, t,     offsetof(struct app_cfg, field), { .u = (d) } }
+#define ITEM_F(k, field, d)    { k, T_F32, offsetof(struct app_cfg, field), { .f = (d) } }
 
 static const struct cfg_item items[] = {
 	ITEM("autostart",       T_BOOL, autostart,       1),
@@ -41,9 +45,22 @@ static const struct cfg_item items[] = {
 	ITEM("cal_enable",      T_BOOL, cal_enable,      1),
 	ITEM("cal_tau_s",       T_U16,  cal_tau_s,       20),
 	ITEM("stats_window_s",  T_U16,  stats_window_s,  10),
+	/* UI / multi-page navigation */
+	ITEM("ui_default_page", T_U8,   ui_default_page, 0),
+	ITEM("ui_timeout_s",    T_U16,  ui_timeout_s,    30),
+	ITEM("ui_cycle_s",      T_U8,   ui_cycle_s,      4),
+	/* Stats / HOLD / energy reset policies on session start */
+	ITEM("stats_reset_on_start",  T_BOOL, stats_reset_on_start,  0),
+	ITEM("hold_reset_on_start",   T_BOOL, hold_reset_on_start,   1),
+	ITEM("energy_reset_on_start", T_BOOL, energy_reset_on_start, 0),
+	/* Display sleep + SD config-file loader */
+	ITEM("display_sleep_s", T_U16,  display_sleep_s, 0),
+	ITEM("cfgfile_load_on_boot", T_BOOL, cfgfile_load_on_boot, 0),
+	/* Floating-point: alert threshold (used in a future phase). */
+	ITEM_F("alerts_i_max_a",       alerts_i_max_a,  5.0f),
 };
 
-static void write_field(const struct cfg_item *it, uint32_t v)
+static void write_field_u(const struct cfg_item *it, uint32_t v)
 {
 	void *p = (uint8_t *)&g_cfg + it->off;
 
@@ -52,20 +69,39 @@ static void write_field(const struct cfg_item *it, uint32_t v)
 	case T_U8:   *(uint8_t *)p = (uint8_t)v;  break;
 	case T_U16:  *(uint16_t *)p = (uint16_t)v; break;
 	case T_U32:  *(uint32_t *)p = v;          break;
+	case T_F32:  *(float *)p = (float)v;      break;   /* coerce from u */
 	}
 }
 
-static uint32_t read_field(const struct cfg_item *it)
+static void write_field_f(const struct cfg_item *it, float v)
 {
 	void *p = (uint8_t *)&g_cfg + it->off;
+	if (it->type == T_F32) {
+		*(float *)p = v;
+	} else {
+		/* graceful coerce for the "user typed 5.0 for an int field" case */
+		write_field_u(it, (uint32_t)v);
+	}
+}
+
+static uint32_t read_field_u(const struct cfg_item *it)
+{
+	const void *p = (const uint8_t *)&g_cfg + it->off;
 
 	switch (it->type) {
-	case T_BOOL: return *(bool *)p;
-	case T_U8:   return *(uint8_t *)p;
-	case T_U16:  return *(uint16_t *)p;
-	case T_U32:  return *(uint32_t *)p;
+	case T_BOOL: return *(const bool *)p;
+	case T_U8:   return *(const uint8_t *)p;
+	case T_U16:  return *(const uint16_t *)p;
+	case T_U32:  return *(const uint32_t *)p;
+	case T_F32:  return (uint32_t)(*(const float *)p);
 	}
 	return 0;
+}
+
+static float read_field_f(const struct cfg_item *it)
+{
+	const void *p = (const uint8_t *)&g_cfg + it->off;
+	return (it->type == T_F32) ? *(const float *)p : (float)read_field_u(it);
 }
 
 void config_set_defaults(void)
@@ -73,7 +109,11 @@ void config_set_defaults(void)
 	memset(&g_cfg, 0, sizeof(g_cfg));
 	g_cfg.version = CFG_VERSION;
 	for (size_t i = 0; i < ARRAY_SIZE(items); i++) {
-		write_field(&items[i], items[i].def);
+		if (items[i].type == T_F32) {
+			write_field_f(&items[i], items[i].def.f);
+		} else {
+			write_field_u(&items[i], items[i].def.u);
+		}
 	}
 }
 
@@ -97,12 +137,12 @@ int config_save(void)
 int config_set(const char *key, const char *valstr)
 {
 	const struct cfg_item *it = find(key);
-	uint32_t v;
 
 	if (!it) {
 		return -ENOENT;
 	}
 	if (it->type == T_BOOL) {
+		uint32_t v;
 		if (!strcmp(valstr, "on") || !strcmp(valstr, "true") || !strcmp(valstr, "1")) {
 			v = 1;
 		} else if (!strcmp(valstr, "off") || !strcmp(valstr, "false") ||
@@ -111,15 +151,22 @@ int config_set(const char *key, const char *valstr)
 		} else {
 			return -EINVAL;
 		}
-	} else {
+		write_field_u(it, v);
+	} else if (it->type == T_F32) {
 		char *end;
-
-		v = strtoul(valstr, &end, 0);
+		float fv = strtof(valstr, &end);
 		if (*end != '\0') {
 			return -EINVAL;
 		}
+		write_field_f(it, fv);
+	} else {
+		char *end;
+		uint32_t v = strtoul(valstr, &end, 0);
+		if (*end != '\0') {
+			return -EINVAL;
+		}
+		write_field_u(it, v);
 	}
-	write_field(it, v);
 	return config_save();
 }
 
@@ -130,7 +177,11 @@ int config_get_str(const char *key, char *buf, size_t len)
 	if (!it) {
 		return -ENOENT;
 	}
-	snprintf(buf, len, "%u", (unsigned)read_field(it));
+	if (it->type == T_F32) {
+		snprintf(buf, len, "%g", (double)read_field_f(it));
+	} else {
+		snprintf(buf, len, "%u", (unsigned)read_field_u(it));
+	}
 	return 0;
 }
 

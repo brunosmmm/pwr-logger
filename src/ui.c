@@ -44,7 +44,8 @@ void ui_init(void)
 {
 	k_mutex_init(&s_lock);
 	s_last_input_ms = k_uptime_get();
-	s_page = (enum ui_page)0;   /* default LIVE; config-driven default lands in Phase 4 */
+	uint8_t p = config_get()->ui_default_page;
+	s_page = (p < PAGE__COUNT) ? (enum ui_page)p : PAGE_LIVE;
 }
 
 static enum ui_page page_get(void)
@@ -259,7 +260,7 @@ static void page_rolling(const struct device *disp)
 static void page_peaks(const struct device *disp)
 {
 	uint16_t win = config_get()->stats_window_s;
-	uint8_t cycle = config_get()->stats_window_s ? 4 : 4;   /* placeholder; cfg.ui_cycle_s in Phase 4 */
+	uint8_t cycle = config_get()->ui_cycle_s ? config_get()->ui_cycle_s : 4;
 	enum stats_ch ch = cycle_channel(cycle);
 
 	char primary[12]; snprintf(primary, sizeof(primary), "PEAK %s %us", ch_label(ch), (unsigned)win);
@@ -278,7 +279,7 @@ static void page_peaks(const struct device *disp)
 
 static void page_hold(const struct device *disp)
 {
-	uint8_t cycle = 4;
+	uint8_t cycle = config_get()->ui_cycle_s ? config_get()->ui_cycle_s : 4;
 	enum stats_ch ch = cycle_channel(cycle);
 
 	char primary[12]; snprintf(primary, sizeof(primary), "HOLD %s", ch_label(ch));
@@ -373,6 +374,20 @@ static void page_system(const struct device *disp)
 /* ---- top-level render dispatch ----------------------------------------- */
 void ui_render(const struct device *disp)
 {
+	/* Auto-return to the configured default page after `ui_timeout_s`
+	 * seconds with no button input. Skip if timeout disabled (0). */
+	uint16_t to = config_get()->ui_timeout_s;
+	if (to > 0) {
+		int64_t last;
+		k_mutex_lock(&s_lock, K_FOREVER); last = s_last_input_ms; k_mutex_unlock(&s_lock);
+		if ((k_uptime_get() - last) > (int64_t)to * 1000) {
+			uint8_t def = config_get()->ui_default_page;
+			if (def < PAGE__COUNT && page_get() != (enum ui_page)def) {
+				ui_set_page((enum ui_page)def);
+			}
+		}
+	}
+
 	cfb_framebuffer_clear(disp, false);
 
 	switch (page_get()) {
