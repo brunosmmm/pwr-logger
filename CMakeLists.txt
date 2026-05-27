@@ -21,6 +21,7 @@ target_sources(app PRIVATE
     src/logctl.c
     src/power.c
     src/cal.c
+    src/controls.c
 )
 
 # Optional SSD1306 OLED (CONFIG_APP_DISPLAY) — compiled only when enabled.

@@ -16,6 +16,7 @@
 #include "clock.h"
 #include "power.h"
 #include "display.h"
+#include "controls.h"
 #endif
 
 LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
@@ -50,6 +51,10 @@ int main(void)
 	 * BLE, buttons/switch and USB/battery events. It seeds the initial mode
 	 * from config (autostart) here. */
 	logctl_init();
+
+	/* Front-panel inputs + LED (must come AFTER logctl_init -- controls
+	 * posts the boot-time OFFLOAD switch level into logctl's msgq). */
+	controls_init();
 
 	while (1) {
 		k_sleep(K_SECONDS(1));

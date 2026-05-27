@@ -22,8 +22,32 @@
 		 * HIGH early by power_init(); cut in dark idle / ship to save power.
 		 * (Was a permanent gpio-hog; now app-controlled.) */
 		rail-gpios = <&gpio0 13 GPIO_ACTIVE_HIGH>;
+
+		/* Front-panel controls (active-low, internal pull-up).
+		 * REC: momentary -- short = start/stop toggle, long(2s) = poweroff.
+		 * ROTATE: momentary -- cut a fresh TDMS file while logging.
+		 * OFFLOAD: SPST maintained -- level read at boot + on every edge;
+		 *   closed = MSC offload mode, open = normal logging.
+		 * P0.09 and P0.10 are the freed NFC pads (nfct-pins-as-gpios in the
+		 * board common.dts); P0.10 was uart0 RX by default but we don't use
+		 * uart0 (shell on CDC, logs on RTT) so we disable it below to free
+		 * the pin. P0.09 was uart0 TX (same treatment). */
+		rec-gpios     = <&gpio0 10 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
+		rotate-gpios  = <&gpio0 17 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
+		offload-gpios = <&gpio0 20 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
+
+		/* Status LED on P0.09 (active-high; ~270-330 ohm series resistor
+		 * to GND). Drawn from MCU GPIO -- survives the gated 3V3 rail
+		 * being cut, so the LED can keep indicating during dark IDLE if
+		 * we ever want that (currently: off in IDLE). */
+		led-gpios = <&gpio0 9 GPIO_ACTIVE_HIGH>;
 	};
 };
+
+/* Free P0.09 / P0.10 from uart0's default pinctrl. We don't use uart0 at all
+ * (shell binds to the USB CDC console, logs go to RTT) -- this lets controls.c
+ * own the pads via plain GPIO. */
+&uart0 { status = "disabled"; };
 
 /* I2C1 default pins (P1.04 / P1.06) are repurposed as SD-CS and CNVR; re-map the
  * TWIM1 bus to two freed pins for a DEDICATED display I2C, so the SSD1306 never
