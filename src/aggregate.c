@@ -19,6 +19,7 @@ static uint32_t s_n;
 
 static struct agg_window s_ready;
 static bool s_have;
+static agg_window_cb_t s_cb;
 
 void agg_reset(void)
 {
@@ -52,6 +53,9 @@ void agg_push(const int16_t *samples, uint16_t n)
 			s_ready.max = s_max;
 			s_ready.t_start = 0; /* TODO: window start tick from block */
 			s_have = true;
+			if (s_cb) {
+				s_cb(&s_ready);   /* runs in producer thread; keep short */
+			}
 
 			s_sum = 0;
 			s_sumsq = 0.0;
@@ -70,4 +74,9 @@ bool agg_take(struct agg_window *out)
 	*out = s_ready;
 	s_have = false;
 	return true;
+}
+
+void agg_set_window_cb(agg_window_cb_t cb)
+{
+	s_cb = cb;
 }

@@ -28,6 +28,7 @@ struct app_cfg {
 	uint16_t adv_idle_ms;      /* BLE advertising interval in connectable idle    */
 	bool     cal_enable;       /* auto-zero the fast channel against the INA228   */
 	uint16_t cal_tau_s;        /* offset-tracking time constant (s)               */
+	uint16_t stats_window_s;   /* rolling-stats window length (s), 1..60          */
 };
 
 typedef void (*config_cb)(const char *key, const char *val, void *ctx);

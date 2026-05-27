@@ -10,7 +10,7 @@
 
 LOG_MODULE_REGISTER(config, LOG_LEVEL_INF);
 
-#define CFG_VERSION 3
+#define CFG_VERSION 4
 #define CFG_KEY     "pwr/cfg"
 #define CFG_BLOB    CFG_KEY "/blob"
 
@@ -40,6 +40,7 @@ static const struct cfg_item items[] = {
 	ITEM("adv_idle_ms",     T_U16,  adv_idle_ms,     1000),
 	ITEM("cal_enable",      T_BOOL, cal_enable,      1),
 	ITEM("cal_tau_s",       T_U16,  cal_tau_s,       20),
+	ITEM("stats_window_s",  T_U16,  stats_window_s,  10),
 };
 
 static void write_field(const struct cfg_item *it, uint32_t v)

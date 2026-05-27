@@ -3,6 +3,7 @@
 #include "logctl.h"
 #include "power.h"
 #include "cal.h"
+#include "stats.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -209,6 +210,85 @@ static int cmd_cfg_list(const struct shell *sh, size_t argc, char **argv)
 	return 0;
 }
 
+static const char *const ch_names[STATS_CH__COUNT] = {
+	"fast_i", "slow_i", "slow_v", "slow_p", "slow_t",
+};
+static const char *const ch_units[STATS_CH__COUNT] = {
+	"A", "A", "V", "W", "C",
+};
+
+static int cmd_stats(const struct shell *sh, size_t argc, char **argv)
+{
+	ARG_UNUSED(argc);
+	ARG_UNUSED(argv);
+	uint16_t win = config_get()->stats_window_s;
+	shell_print(sh, "rolling window: %u s", (unsigned)win);
+	shell_print(sh, "  channel    mean        min         max         n");
+	for (int i = 0; i < STATS_CH__COUNT; i++) {
+		struct stats_window w;
+		if (!stats_window_get((enum stats_ch)i, win, &w)) {
+			shell_print(sh, "  %-8s   (no data)", ch_names[i]);
+			continue;
+		}
+		shell_print(sh, "  %-8s  % .4g %s   % .4g %s   % .4g %s   %u",
+			    ch_names[i], (double)w.mean, ch_units[i],
+			    (double)w.min, ch_units[i],
+			    (double)w.max, ch_units[i], (unsigned)w.n);
+	}
+	return 0;
+}
+
+static int cmd_hold(const struct shell *sh, size_t argc, char **argv)
+{
+	ARG_UNUSED(argc);
+	ARG_UNUSED(argv);
+	for (int i = 0; i < STATS_CH__COUNT; i++) {
+		struct stats_hold h;
+		if (!stats_hold_get((enum stats_ch)i, &h)) {
+			shell_print(sh, "  %-8s   (no data)", ch_names[i]);
+			continue;
+		}
+		int64_t age = k_uptime_get() - h.since_uptime_ms;
+		shell_print(sh, "  %-8s  min % .4g %s  max % .4g %s  for %lld ms",
+			    ch_names[i], (double)h.min, ch_units[i],
+			    (double)h.max, ch_units[i], (long long)age);
+	}
+	return 0;
+}
+
+static int cmd_hold_clear(const struct shell *sh, size_t argc, char **argv)
+{
+	ARG_UNUSED(argc);
+	ARG_UNUSED(argv);
+	stats_hold_clear(STATS_CH_ALL);
+	shell_print(sh, "hold cleared (all channels)");
+	return 0;
+}
+
+static int cmd_energy(const struct shell *sh, size_t argc, char **argv)
+{
+	ARG_UNUSED(argc);
+	ARG_UNUSED(argv);
+	double wh = stats_energy_wh();
+	double q  = stats_energy_q_as();
+	int64_t ms = stats_energy_elapsed_ms();
+	shell_print(sh, "  E  = %.4g mWh   ( %.6g Wh )",
+		    wh * 1000.0, wh);
+	shell_print(sh, "  Q  = %.4g mAh   ( %.6g As )",
+		    q * 1000.0 / 3600.0, q);
+	shell_print(sh, "  t  = %lld ms",  (long long)ms);
+	return 0;
+}
+
+static int cmd_energy_clear(const struct shell *sh, size_t argc, char **argv)
+{
+	ARG_UNUSED(argc);
+	ARG_UNUSED(argv);
+	stats_energy_clear();
+	shell_print(sh, "energy accumulator reset");
+	return 0;
+}
+
 SHELL_STATIC_SUBCMD_SET_CREATE(time_sub,
 	SHELL_CMD(get, NULL, "show current UTC time", cmd_time_get),
 	SHELL_CMD(set, NULL, "set time: pwr time set <epoch>", cmd_time_set),
@@ -218,6 +298,16 @@ SHELL_STATIC_SUBCMD_SET_CREATE(cfg_sub,
 	SHELL_CMD(get,  NULL, "get <key>", cmd_cfg_get),
 	SHELL_CMD(set,  NULL, "set <key> <value>", cmd_cfg_set),
 	SHELL_CMD(list, NULL, "list all config", cmd_cfg_list),
+	SHELL_SUBCMD_SET_END);
+
+SHELL_STATIC_SUBCMD_SET_CREATE(hold_sub,
+	SHELL_CMD(show,  NULL, "print HOLD latches",   cmd_hold),
+	SHELL_CMD(clear, NULL, "clear all HOLD",       cmd_hold_clear),
+	SHELL_SUBCMD_SET_END);
+
+SHELL_STATIC_SUBCMD_SET_CREATE(energy_sub,
+	SHELL_CMD(show,  NULL, "print accumulators",   cmd_energy),
+	SHELL_CMD(clear, NULL, "reset accumulators",   cmd_energy_clear),
 	SHELL_SUBCMD_SET_END);
 
 SHELL_STATIC_SUBCMD_SET_CREATE(pwr_sub,
@@ -231,8 +321,11 @@ SHELL_STATIC_SUBCMD_SET_CREATE(pwr_sub,
 	SHELL_CMD(batt,     NULL, "battery (VDDH) voltage", cmd_batt),
 	SHELL_CMD(lowbatt,  NULL, "simulate low-battery event (test)", cmd_lowbatt),
 	SHELL_CMD(usb,      NULL, "simulate VBUS on/off (test)", cmd_usb),
-	SHELL_CMD(time,     &time_sub, "time get/set", NULL),
-	SHELL_CMD(config,   &cfg_sub,  "config get/set/list", NULL),
+	SHELL_CMD(time,     &time_sub,   "time get/set", NULL),
+	SHELL_CMD(config,   &cfg_sub,    "config get/set/list", NULL),
+	SHELL_CMD(stats,    NULL,        "rolling min/mean/max per channel", cmd_stats),
+	SHELL_CMD(hold,     &hold_sub,   "HOLD show/clear", NULL),
+	SHELL_CMD(energy,   &energy_sub, "energy accumulators", NULL),
 	SHELL_SUBCMD_SET_END);
 
 SHELL_CMD_REGISTER(pwr, &pwr_sub, "pwr-logger control", NULL);

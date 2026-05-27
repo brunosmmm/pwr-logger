@@ -17,6 +17,7 @@
 #include "power.h"
 #include "display.h"
 #include "controls.h"
+#include "stats.h"
 #endif
 
 LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
@@ -45,6 +46,7 @@ int main(void)
 	ble_stream_init();
 	usb_storage_init();
 	display_init();   /* no-op unless CONFIG_APP_DISPLAY */
+	stats_init();     /* hooks aggregate.c + ina228.c callbacks; lock-light */
 	logger_init();
 
 	/* logctl owns the mode (logging / offload / ship), driven by the console,

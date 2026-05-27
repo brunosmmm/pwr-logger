@@ -39,6 +39,7 @@ static float s_current_lsb;         /* A/LSB, from SHUNT_CAL */
 
 static struct ina228_sample s_last;  /* latest sample, for cosmetic readers */
 static volatile bool s_have_last;
+static ina228_sample_cb_t s_sample_cb;
 
 bool ina228_last(struct ina228_sample *out)
 {
@@ -47,6 +48,11 @@ bool ina228_last(struct ina228_sample *out)
 	}
 	*out = s_last;   /* benign torn-read risk; cosmetic only */
 	return true;
+}
+
+void ina228_set_sample_cb(ina228_sample_cb_t cb)
+{
+	s_sample_cb = cb;
 }
 
 static struct k_thread rd_thread;
@@ -118,6 +124,12 @@ static void rd_fn(void *a, void *b, void *c)
 		 * reads ("benign torn-read risk; cosmetic only"). */
 		s_last = s;
 		s_have_last = true;
+
+		/* Fire the stats/observer callback if attached. Runs in this
+		 * thread -- keep callbacks short (stats.c is ~5 us). */
+		if (s_sample_cb) {
+			s_sample_cb(&s);
+		}
 
 		int64_t now = k_uptime_get();
 

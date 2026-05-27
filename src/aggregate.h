@@ -22,4 +22,10 @@ void agg_reset(void);
 void agg_push(const int16_t *samples, uint16_t n);
 bool agg_take(struct agg_window *out);  /* true if a window is ready */
 
+/* Optional observer fired the moment a new window is finalized (single
+ * subscriber, runs in the producer thread -- keep the callback short).
+ * Pass NULL to detach. Used by stats.c for the rolling/HOLD engine. */
+typedef void (*agg_window_cb_t)(const struct agg_window *);
+void agg_set_window_cb(agg_window_cb_t cb);
+
 #endif /* AGGREGATE_H_ */

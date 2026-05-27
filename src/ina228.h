@@ -30,4 +30,10 @@ int ina228_stop(void);
  * Returns false if none yet. Not for the data path (use ina228_msgq). */
 bool ina228_last(struct ina228_sample *out);
 
+/* Optional observer fired the moment a new sample is read (single subscriber,
+ * runs in the INA228 read thread -- keep the callback short). Pass NULL to
+ * detach. Used by stats.c for the rolling/HOLD/energy engine. */
+typedef void (*ina228_sample_cb_t)(const struct ina228_sample *);
+void ina228_set_sample_cb(ina228_sample_cb_t cb);
+
 #endif /* INA228_H_ */
