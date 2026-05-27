@@ -53,6 +53,15 @@
 	pinctrl-0 = <&i2c1_disp>;
 	pinctrl-1 = <&i2c1_disp_sleep>;
 	pinctrl-names = "default", "sleep";
+	/* SSD1306 driver pushes a 1024-byte framebuffer prepended by a 1-byte
+	 * I2C "control byte" (0x40 = data). EasyDMA needs a contiguous buffer:
+	 * the TWIM driver concatenates the two via this scratch buffer. If it's
+	 * unset / 0 the burst splits into two I2C transactions, the second
+	 * starts with what was the first pixel byte but the chip interprets it
+	 * as a NEW control byte (0x00 = command) -> the rest of the framebuffer
+	 * is executed as commands -> screen shows random garbage. 1088 bytes
+	 * covers the full 128x64 mono frame + control byte with headroom. */
+	zephyr,concat-buf-size = <1088>;
 
 	oled: ssd1306@3c {
 		compatible = "solomon,ssd1306";
