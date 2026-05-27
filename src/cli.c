@@ -4,6 +4,7 @@
 #include "power.h"
 #include "cal.h"
 #include "stats.h"
+#include "ui.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -289,6 +290,41 @@ static int cmd_energy_clear(const struct shell *sh, size_t argc, char **argv)
 	return 0;
 }
 
+/* `pwr ui page N` -- jump to a specific UI page (0..PAGE__COUNT-1).
+ * Mostly diagnostic; the operator usually uses ROTATE button (Phase 3). */
+static const char *const page_names[PAGE__COUNT] = {
+	"LIVE", "ROLLING", "PEAKS", "HOLD", "ENERGY", "FILE", "SYSTEM",
+};
+
+static int cmd_ui_page(const struct shell *sh, size_t argc, char **argv)
+{
+	if (argc < 2) {
+		shell_print(sh, "current page: %d (%s)",
+			    (int)ui_get_page(), page_names[ui_get_page()]);
+		shell_print(sh, "available:");
+		for (int i = 0; i < PAGE__COUNT; i++) {
+			shell_print(sh, "  %d  %s", i, page_names[i]);
+		}
+		return 0;
+	}
+	int p = atoi(argv[1]);
+	if (p < 0 || p >= PAGE__COUNT) {
+		shell_error(sh, "page out of range (0..%d)", PAGE__COUNT - 1);
+		return -EINVAL;
+	}
+	ui_set_page((enum ui_page)p);
+	shell_print(sh, "page = %d (%s)", p, page_names[p]);
+	return 0;
+}
+
+static int cmd_ui_next(const struct shell *sh, size_t argc, char **argv)
+{
+	ARG_UNUSED(argc); ARG_UNUSED(argv);
+	ui_next_page();
+	shell_print(sh, "page = %d (%s)", (int)ui_get_page(), page_names[ui_get_page()]);
+	return 0;
+}
+
 SHELL_STATIC_SUBCMD_SET_CREATE(time_sub,
 	SHELL_CMD(get, NULL, "show current UTC time", cmd_time_get),
 	SHELL_CMD(set, NULL, "set time: pwr time set <epoch>", cmd_time_set),
@@ -310,6 +346,11 @@ SHELL_STATIC_SUBCMD_SET_CREATE(energy_sub,
 	SHELL_CMD(clear, NULL, "reset accumulators",   cmd_energy_clear),
 	SHELL_SUBCMD_SET_END);
 
+SHELL_STATIC_SUBCMD_SET_CREATE(ui_sub,
+	SHELL_CMD(page, NULL, "page [N]: show or set page", cmd_ui_page),
+	SHELL_CMD(next, NULL, "advance to next page",       cmd_ui_next),
+	SHELL_SUBCMD_SET_END);
+
 SHELL_STATIC_SUBCMD_SET_CREATE(pwr_sub,
 	SHELL_CMD(status,   NULL, "device status", cmd_status),
 	SHELL_CMD(log,      NULL, "start logging", cmd_log),
@@ -326,6 +367,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(pwr_sub,
 	SHELL_CMD(stats,    NULL,        "rolling min/mean/max per channel", cmd_stats),
 	SHELL_CMD(hold,     &hold_sub,   "HOLD show/clear", NULL),
 	SHELL_CMD(energy,   &energy_sub, "energy accumulators", NULL),
+	SHELL_CMD(ui,       &ui_sub,     "UI page select", NULL),
 	SHELL_SUBCMD_SET_END);
 
 SHELL_CMD_REGISTER(pwr, &pwr_sub, "pwr-logger control", NULL);

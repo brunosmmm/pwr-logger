@@ -23,4 +23,7 @@ int storage_write(struct storage_file *f, const void *buf, size_t len);
 int storage_sync(struct storage_file *f);
 int storage_session_end(struct storage_file *f);
 
+/* Last session path opened (or "" if none yet). Static buffer; do not free. */
+const char *storage_session_path(void);
+
 #endif /* STORAGE_H_ */

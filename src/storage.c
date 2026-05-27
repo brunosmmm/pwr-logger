@@ -94,6 +94,13 @@ static void name_indexed(char *path, size_t cap)
 	}
 }
 
+static char s_last_path[80];
+
+const char *storage_session_path(void)
+{
+	return s_last_path;
+}
+
 int storage_session_begin(struct storage_file *f)
 {
 	char path[80];
@@ -137,6 +144,8 @@ int storage_session_begin(struct storage_file *f)
 		return rc;
 	}
 	wbuf_len = 0;
+	strncpy(s_last_path, path, sizeof(s_last_path) - 1);
+	s_last_path[sizeof(s_last_path) - 1] = '\0';
 	LOG_INF("session file: %s", path);
 	return 0;
 }

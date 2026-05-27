@@ -18,6 +18,7 @@
 #include "display.h"
 #include "controls.h"
 #include "stats.h"
+#include "ui.h"
 #endif
 
 LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
@@ -46,6 +47,7 @@ int main(void)
 	ble_stream_init();
 	usb_storage_init();
 	display_init();   /* no-op unless CONFIG_APP_DISPLAY */
+	ui_init();        /* multi-page UI state (no-op without DISPLAY) */
 	stats_init();     /* hooks aggregate.c + ina228.c callbacks; lock-light */
 	logger_init();
 

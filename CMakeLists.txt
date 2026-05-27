@@ -26,6 +26,6 @@ target_sources(app PRIVATE
 )
 
 # Optional SSD1306 OLED (CONFIG_APP_DISPLAY) — compiled only when enabled.
-target_sources_ifdef(CONFIG_APP_DISPLAY app PRIVATE src/display.c)
+target_sources_ifdef(CONFIG_APP_DISPLAY app PRIVATE src/display.c src/ui.c)
 
 target_include_directories(app PRIVATE src)
