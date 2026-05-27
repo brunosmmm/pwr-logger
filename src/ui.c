@@ -83,6 +83,15 @@ void ui_kick(void)
 }
 enum ui_page ui_get_page(void) { return page_get(); }
 
+int64_t ui_idle_ms(void)
+{
+	int64_t last;
+	k_mutex_lock(&s_lock, K_FOREVER);
+	last = s_last_input_ms;
+	k_mutex_unlock(&s_lock);
+	return k_uptime_get() - last;
+}
+
 void ui_hold_clear_current(void)
 {
 	enum ui_page p = page_get();

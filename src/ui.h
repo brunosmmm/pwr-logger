@@ -39,4 +39,8 @@ void ui_kick(void);                           /* any button: bump last-input ms 
 void ui_hold_clear_current(void);             /* ROTATE long on a HOLD-related page */
 enum ui_page ui_get_page(void);
 
+/* Milliseconds since the last ui_kick() (i.e. last button press). Used by
+ * display.c to decide when to blank the panel for idle. */
+int64_t ui_idle_ms(void);
+
 #endif /* UI_H_ */

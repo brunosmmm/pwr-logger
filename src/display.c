@@ -3,6 +3,7 @@
 #if defined(CONFIG_APP_DISPLAY)
 
 #include "ui.h"
+#include "config.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -89,6 +90,14 @@ static bool render_notice_if_active(void)
 	return true;
 }
 
+/* Idle-blank state. When ui_idle_ms() > cfg.display_sleep_s * 1000 the panel
+ * is put into blanking (SSD1306 sleep-display, AEh command); on the first
+ * tick that ui_idle_ms() drops below the threshold (i.e. a button was just
+ * pressed) we un-blank and force a fresh render. This is separate from
+ * display_set_powered() -- the chip keeps its rail and GDDRAM, just stops
+ * driving the OLED segments. Wakeup is immediate. */
+static bool s_blanked;
+
 static void disp_loop(void *a, void *b, void *c)
 {
 	ARG_UNUSED(a);
@@ -96,8 +105,24 @@ static void disp_loop(void *a, void *b, void *c)
 	ARG_UNUSED(c);
 	while (1) {
 		if (atomic_get(&s_powered)) {
-			if (!render_notice_if_active()) {
-				render();
+			uint16_t sleep_s = config_get()->display_sleep_s;
+			bool should_blank = (sleep_s > 0) &&
+					    (ui_idle_ms() > (int64_t)sleep_s * 1000);
+
+			if (should_blank && !s_blanked) {
+				display_blanking_on(disp);
+				s_blanked = true;
+				LOG_INF("display: blanked (idle %us)", sleep_s);
+			} else if (!should_blank && s_blanked) {
+				display_blanking_off(disp);
+				s_blanked = false;
+				LOG_INF("display: woke");
+			}
+
+			if (!s_blanked) {
+				if (!render_notice_if_active()) {
+					render();
+				}
 			}
 		}
 		k_sleep(K_MSEC(500));   /* ~2 Hz: gentle on the bus + CPU */
