@@ -7,6 +7,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/settings/settings.h>
 #include <zephyr/logging/log.h>
+#include <hal/nrf_power.h>
 
 LOG_MODULE_REGISTER(config, LOG_LEVEL_INF);
 
@@ -131,6 +132,14 @@ static const struct cfg_item *find(const char *key)
 
 int config_save(void)
 {
+	/* nRF52840 erratum 242: the soc_flash_nrf driver disables POFCON
+	 * around every flash op and refuses the write with -ECANCELED if the
+	 * POFWARN event is latched (it'd be unsafe to write through a
+	 * brownout). With our V28 VDD threshold + HV mode, a stale POFWARN
+	 * can sit latched even on healthy USB power. Clear it just before
+	 * we ask the settings subsystem to persist. The power.c poll loop
+	 * still arms POFCON for real low-battery cases. */
+	nrf_power_event_clear(NRF_POWER, NRF_POWER_EVENT_POFWARN);
 	return settings_save_one(CFG_BLOB, &g_cfg, sizeof(g_cfg));
 }
 

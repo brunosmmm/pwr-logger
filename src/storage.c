@@ -2,6 +2,7 @@
 #include "clock.h"
 #include "config.h"
 
+#include <errno.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
@@ -99,6 +100,40 @@ static char s_last_path[80];
 const char *storage_session_path(void)
 {
 	return s_last_path;
+}
+
+int storage_read_file(const char *path, void *buf, size_t cap, size_t *out_len)
+{
+	struct fs_file_t fp;
+	fs_file_t_init(&fp);
+	int rc = fs_open(&fp, path, FS_O_READ);
+	if (rc != 0) {
+		return rc;
+	}
+	ssize_t got = fs_read(&fp, buf, cap);
+	(void)fs_close(&fp);
+	if (got < 0) {
+		return (int)got;
+	}
+	if (out_len) {
+		*out_len = (size_t)got;
+	}
+	return 0;
+}
+
+int storage_write_file(const char *path, const void *buf, size_t len)
+{
+	struct fs_file_t fp;
+	fs_file_t_init(&fp);
+	int rc = fs_open(&fp, path, FS_O_CREATE | FS_O_WRITE | FS_O_TRUNC);
+	if (rc != 0) {
+		return rc;
+	}
+	ssize_t w = fs_write(&fp, buf, len);
+	int crc = fs_close(&fp);
+	if (w < 0) return (int)w;
+	if ((size_t)w != len) return -EIO;
+	return crc;
 }
 
 int storage_session_begin(struct storage_file *f)

@@ -19,6 +19,8 @@
 #include "controls.h"
 #include "stats.h"
 #include "ui.h"
+#include "storage.h"
+#include "cfgfile.h"
 #endif
 
 LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
@@ -50,6 +52,19 @@ int main(void)
 	ui_init();        /* multi-page UI state (no-op without DISPLAY) */
 	stats_init();     /* hooks aggregate.c + ina228.c callbacks; lock-light */
 	logger_init();
+
+	/* Optional SD-backed config overlay. Read /SD:/pwr.cfg early -- the keys
+	 * we apply (ui.*, stats.*, display.*) should take effect on the first
+	 * render / logger_start. logger_start will re-mount as needed; we leave
+	 * the FS unmounted here. */
+	if (config_get()->cfgfile_load_on_boot) {
+		if (storage_mount() == 0) {
+			(void)cfgfile_apply_from_sd();
+			(void)storage_unmount();
+		} else {
+			LOG_WRN("cfgfile_load_on_boot: SD mount failed -- skipping");
+		}
+	}
 
 	/* logctl owns the mode (logging / offload / ship), driven by the console,
 	 * BLE, buttons/switch and USB/battery events. It seeds the initial mode

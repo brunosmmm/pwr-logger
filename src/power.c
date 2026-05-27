@@ -111,7 +111,13 @@ static void pofcon_arm(uint16_t trip_mv)
 {
 	nrf_power_mainregstatus_t reg;
 
-	nrf_power_pofcon_set(NRF_POWER, true, NRF_POWER_POFTHR_V28); /* enable; VDD thr unused in HV */
+	/* VDD threshold: set to the LOWEST option (V17 = 1.7 V) so it never
+	 * trips spuriously when REG0 is at its default 1.8 V output. The V28
+	 * default sat ABOVE our VDD, which kept POFWARN permanently latched,
+	 * which made every NVS/flash write fail with -ECANCELED via the
+	 * nRF52 erratum-242 path in soc_flash_nrf. Real low-battery detection
+	 * happens via the VDDH threshold below (HV mode). */
+	nrf_power_pofcon_set(NRF_POWER, true, NRF_POWER_POFTHR_V17);
 	nrf_power_pofcon_vddh_set(NRF_POWER, vddh_thr(trip_mv));
 	nrf_power_event_clear(NRF_POWER, NRF_POWER_EVENT_POFWARN);
 	reg = nrf_power_mainregstatus_get(NRF_POWER);

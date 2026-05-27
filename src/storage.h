@@ -26,4 +26,14 @@ int storage_session_end(struct storage_file *f);
 /* Last session path opened (or "" if none yet). Static buffer; do not free. */
 const char *storage_session_path(void);
 
+/* Read up to `cap` bytes from `path` into `buf`. Sets *out_len to bytes read.
+ * Returns 0 on success (including 0-byte files); negative errno on failure.
+ * Caller must have called storage_mount() first (no auto-mount). For small
+ * text files like /SD:/pwr.cfg. */
+int storage_read_file(const char *path, void *buf, size_t cap, size_t *out_len);
+
+/* Open `path` for write, truncating any existing content. Closes immediately
+ * after writing all `len` bytes. Returns 0 / negative errno. */
+int storage_write_file(const char *path, const void *buf, size_t len);
+
 #endif /* STORAGE_H_ */

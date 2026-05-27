@@ -5,6 +5,7 @@
 #include "cal.h"
 #include "stats.h"
 #include "ui.h"
+#include "cfgfile.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -211,6 +212,30 @@ static int cmd_cfg_list(const struct shell *sh, size_t argc, char **argv)
 	return 0;
 }
 
+static int cmd_cfg_import(const struct shell *sh, size_t argc, char **argv)
+{
+	ARG_UNUSED(argc); ARG_UNUSED(argv);
+	int n = cfgfile_apply_from_sd();
+	if (n < 0) {
+		shell_error(sh, "import failed: %d", n);
+		return n;
+	}
+	shell_print(sh, "imported %d key(s) from %s", n, CFGFILE_PATH);
+	return 0;
+}
+
+static int cmd_cfg_export(const struct shell *sh, size_t argc, char **argv)
+{
+	ARG_UNUSED(argc); ARG_UNUSED(argv);
+	int rc = cfgfile_export_to_sd();
+	if (rc) {
+		shell_error(sh, "export failed: %d", rc);
+		return rc;
+	}
+	shell_print(sh, "exported config to %s", CFGFILE_PATH);
+	return 0;
+}
+
 static const char *const ch_names[STATS_CH__COUNT] = {
 	"fast_i", "slow_i", "slow_v", "slow_p", "slow_t",
 };
@@ -331,9 +356,11 @@ SHELL_STATIC_SUBCMD_SET_CREATE(time_sub,
 	SHELL_SUBCMD_SET_END);
 
 SHELL_STATIC_SUBCMD_SET_CREATE(cfg_sub,
-	SHELL_CMD(get,  NULL, "get <key>", cmd_cfg_get),
-	SHELL_CMD(set,  NULL, "set <key> <value>", cmd_cfg_set),
-	SHELL_CMD(list, NULL, "list all config", cmd_cfg_list),
+	SHELL_CMD(get,    NULL, "get <key>", cmd_cfg_get),
+	SHELL_CMD(set,    NULL, "set <key> <value>", cmd_cfg_set),
+	SHELL_CMD(list,   NULL, "list all config", cmd_cfg_list),
+	SHELL_CMD(import, NULL, "load /SD:/pwr.cfg into NVS", cmd_cfg_import),
+	SHELL_CMD(export, NULL, "write current config to /SD:/pwr.cfg", cmd_cfg_export),
 	SHELL_SUBCMD_SET_END);
 
 SHELL_STATIC_SUBCMD_SET_CREATE(hold_sub,
