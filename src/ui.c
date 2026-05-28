@@ -227,20 +227,25 @@ static enum stats_ch cycle_channel(uint8_t cycle_s)
 }
 
 /* ---- status bar (yellow strip @ y=0..15, inverted) ---------------------- *
- * Layout (128 x 16):
- *   x=0..15   battery icon  (5 fill levels, picked by SoC bucket; blank on USB)
- *   x=16..31  USB plug  if VBUS present, else REC dot if LS_LOGGING, else blank
- *   x=32..47  Bluetooth icon if a central is subscribed, else blank
- *   x=48..127 8 chars of text:  "[ST3] primary"  e.g.  "REC LIVE"  or  "STA SYS"
+ * Layout (128 x 16) -- four fixed icon slots so icons never move based on
+ * which conditions happen to be true:
+ *   x= 0..15   chain-link icon  when on USB (slot stays blank on battery)
+ *   x=16..31   battery icon     ALWAYS shown; empty shell when on USB or the
+ *                               reading is unknown, 25/50/75/100% fill bars
+ *                               when on battery
+ *   x=32..47   REC dot          when LS_LOGGING (independent of USB so the
+ *                               recording indicator is visible even plugged in)
+ *   x=48..63   Bluetooth        when a central is subscribed
+ *   x=64..127  primary text (~6 chars at 10x16; long labels clip at x=128)
  *
- * Implementation: switch to the 16x16 icons font (CFB index 1) to draw the
- * three icon slots, switch back to font 0 for the text. The whole strip is
- * inverted by cfb_invert_area at the end -- icons become dark glyphs on
- * bright yellow background, matching the inverted text below.
+ * Implementation: switch to the 16x16 icons font for the four icon slots,
+ * switch back to text font for the primary. cfb_invert_area flips the whole
+ * strip at the end so icons + text both appear dark on the bright yellow
+ * background.
  *
  * Icon glyph codepoints live in icons_font.c:
  *   '\x40'..'\x44'  battery 0..100 %% in 25 %% steps
- *   '\x45'          USB plug
+ *   '\x45'          chain-link (USB-connected indicator)
  *   '\x46'          Bluetooth
  *   '\x47'          REC dot
  */
@@ -263,37 +268,46 @@ static void render_status_bar(const struct device *disp, const char *primary)
 		return;
 	}
 
+	/* Slot 0: chain-link when USB is plugged. */
+	if (usb) {
+		one[0] = '\x45';
+		cfb_print(disp, one, 0, 0);
+	}
+
+	/* Slot 1: battery, ALWAYS rendered. The SAADC battery channel reads
+	 * VDD via the divider while on USB (~4.8 V meaningless), so on USB we
+	 * draw the empty shell as a "reading unavailable" indicator rather
+	 * than hiding the icon and having the bar reflow. On battery, the
+	 * fill level reflects the SoC bucket. */
+	uint8_t bat_glyph = 0x40;   /* default: empty shell */
 	if (!usb && pct >= 0) {
-		/* Bucket SoC into the five battery glyphs: <12 = empty,
-		 * 12..37 = 25%, 37..62 = 50%, 62..87 = 75%, >=87 = full. */
+		/* Bucket SoC: <12 = empty, 12..37 = 25%, 37..62 = 50%,
+		 * 62..87 = 75%, >=87 = full. */
 		uint8_t b = (pct >= 87) ? 4 :
 			    (pct >= 62) ? 3 :
 			    (pct >= 37) ? 2 :
 			    (pct >= 12) ? 1 : 0;
-		one[0] = (char)(0x40 + b);
-		cfb_print(disp, one, 0, 0);
+		bat_glyph = (uint8_t)(0x40 + b);
 	}
+	one[0] = (char)bat_glyph;
+	cfb_print(disp, one, 16, 0);
 
-	if (usb) {
-		one[0] = '\x45';   /* USB-connected link icon */
-		cfb_print(disp, one, 16, 0);
-	} else if (lst == LS_LOGGING) {
-		one[0] = '\x47';   /* REC dot */
-		cfb_print(disp, one, 16, 0);
-	}
-
-	if (ble_stream_subscribed()) {
-		one[0] = '\x46';   /* Bluetooth */
+	/* Slot 2: REC dot when logging, regardless of USB. */
+	if (lst == LS_LOGGING) {
+		one[0] = '\x47';
 		cfb_print(disp, one, 32, 0);
 	}
 
-	/* --- primary text right of the icons ---------------------------- *
-	 * Just the per-page label now (e.g. "LIVE", "ROLL 10s") -- the
-	 * state-abbrev "REC"/"STP"/"OFF" is redundant with the REC-dot /
-	 * link / (no-icon) state slot above and was duplicating info. */
+	/* Slot 3: Bluetooth when a central is subscribed. */
+	if (ble_stream_subscribed()) {
+		one[0] = '\x46';
+		cfb_print(disp, one, 48, 0);
+	}
+
+	/* --- primary text right of the icons --------------------------- */
 	cfb_framebuffer_set_font(disp, display_font_text());
 	if (primary && *primary) {
-		cfb_print(disp, primary, 48, 0);
+		cfb_print(disp, primary, 64, 0);
 	}
 
 	/* Invert the entire yellow strip -> bright background, dark icons + text. */
