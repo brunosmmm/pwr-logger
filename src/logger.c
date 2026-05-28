@@ -72,7 +72,7 @@ static void writer_fn(void *a, void *b, void *c)
 		if (k_msgq_get(&acq_msgq, &blk, K_MSEC(100)) == 0) {
 			uint64_t t = timebase_extend(blk.t_capture);
 
-			agg_push(blk.samples, blk.count);           /* RAW -> live view + cal */
+			agg_push(blk.samples, blk.count, t);        /* RAW -> live view + cal; t = first-sample tick */
 			if (s_session) {
 				/* Bake the INA228-referenced offset into the stored codes so
 				 * the SD data agrees with the precision channel (no metadata). */
@@ -193,6 +193,10 @@ int logger_start(void)
 	if (cfg->stats_reset_on_start)  { stats_session_reset(); }
 	if (cfg->hold_reset_on_start)   { stats_hold_clear(STATS_CH_ALL); }
 	if (cfg->energy_reset_on_start) { stats_energy_clear(); }
+
+	/* Per-session drop counter: zero at every logger_start so the FILE/SYS
+	 * pages show drops scoped to the current recording, not project lifetime. */
+	acq_drops_reset();
 
 	s_running = true;
 	writer_tid = k_thread_create(&writer_thread, writer_stack,

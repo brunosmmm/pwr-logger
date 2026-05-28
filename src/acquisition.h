@@ -24,8 +24,11 @@ int  acq_start(void);
 int  acq_stop(void);
 void acq_block_release(struct acq_block *blk);
 
-/* Cumulative count of dropped buffers (pool exhausted / queue full). */
+/* Count of dropped buffers (pool exhausted / queue full) since the last
+ * acq_drops_reset(). logger_start() resets this at session begin so the
+ * value displayed on FILE/SYS pages is per-session, not project-lifetime. */
 uint32_t acq_drops(void);
+void     acq_drops_reset(void);
 
 /* One-shot battery read: SAADC VDDHDIV5 vs the internal 0.6 V ref, x5 -> VDDH mV.
  * ONLY valid while the fast channel is stopped (shares the single SAADC; the fast

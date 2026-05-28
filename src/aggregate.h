@@ -19,7 +19,11 @@ struct agg_window {
 };
 
 void agg_reset(void);
-void agg_push(const int16_t *samples, uint16_t n);
+/* Push `n` samples that arrived in the block whose first-sample tick is
+ * `t_first_tick`. If the just-completed window had its first sample inside
+ * this block, the aggregator stamps `t_start` for that window from
+ * t_first_tick. (Pass 0 if you don't care -- t_start is still cosmetic.) */
+void agg_push(const int16_t *samples, uint16_t n, uint64_t t_first_tick);
 bool agg_take(struct agg_window *out);  /* true if a window is ready */
 
 /* Optional observer fired the moment a new window is finalized (single

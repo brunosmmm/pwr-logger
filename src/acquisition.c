@@ -43,6 +43,11 @@ uint32_t acq_drops(void)
 	return (uint32_t)atomic_get(&s_drops);
 }
 
+void acq_drops_reset(void)
+{
+	atomic_clear(&s_drops);
+}
+
 /* nrfx SAADC event handler (ISR context). Keep it minimal: hand off buffers,
  * never block. */
 static void saadc_evt(nrfx_saadc_evt_t const *evt)

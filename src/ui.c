@@ -44,8 +44,12 @@ void ui_init(void)
 {
 	k_mutex_init(&s_lock);
 	s_last_input_ms = k_uptime_get();
-	uint8_t p = config_get()->ui_default_page;
-	s_page = (p < PAGE__COUNT) ? (enum ui_page)p : PAGE_LIVE;
+	/* Always boot to LIVE regardless of NVS. cfg.ui_default_page still drives
+	 * the optional auto-return-on-idle target (cfg.ui_timeout_s, default 0).
+	 * Booting straight into PEAKS/HOLD/FILE/etc. surprised operators after a
+	 * power cycle and could land them on a page whose backing data isn't
+	 * ready yet (e.g. FILE before storage_mount). LIVE is always renderable. */
+	s_page = PAGE_LIVE;
 }
 
 static enum ui_page page_get(void)
@@ -223,7 +227,7 @@ static void page_live(const struct device *disp)
 	render_status_bar(disp, NULL);
 
 	struct ina228_sample s;
-	char li[16], lv[16], lp[16], buf[12];
+	char li[24], lv[24], lp[24], buf[20];
 	if (ina228_last(&s)) {
 		/* Reuse the existing display.c scaling math via the same constants. */
 		extern const float INA228_VBUS_LSB_V_DUMMY;   /* unused -- formulas below inline scales */
@@ -247,10 +251,10 @@ static void page_live(const struct device *disp)
 static void page_rolling(const struct device *disp)
 {
 	uint16_t win = config_get()->stats_window_s;
-	char primary[12]; snprintf(primary, sizeof(primary), "ROLL %us", (unsigned)win);
+	char primary[20]; snprintf(primary, sizeof(primary), "ROLL %us", (unsigned)win);
 	render_status_bar(disp, primary);
 
-	char lines[3][16], buf[12];
+	char lines[3][24], buf[20];
 	const enum stats_ch chs[3] = { STATS_CH_SLOW_I, STATS_CH_SLOW_V, STATS_CH_SLOW_P };
 	for (int i = 0; i < 3; i++) {
 		struct stats_window w;
@@ -272,7 +276,7 @@ static void page_peaks(const struct device *disp)
 	uint8_t cycle = config_get()->ui_cycle_s ? config_get()->ui_cycle_s : 4;
 	enum stats_ch ch = cycle_channel(cycle);
 
-	char primary[12]; snprintf(primary, sizeof(primary), "PEAK %s %us", ch_label(ch), (unsigned)win);
+	char primary[20]; snprintf(primary, sizeof(primary), "PEAK %s %us", ch_label(ch), (unsigned)win);
 	render_status_bar(disp, primary);
 
 	struct stats_window w;
@@ -280,7 +284,7 @@ static void page_peaks(const struct device *disp)
 		cfb_print(disp, "  (no data)", 0, s_fh * 2);
 		return;
 	}
-	char b[12], line[16];
+	char b[20], line[24];
 	fmt_si_f(b, sizeof(b), w.min,  ch_unit(ch)); snprintf(line, sizeof(line), "min %s", b); cfb_print(disp, line, 0, s_fh);
 	fmt_si_f(b, sizeof(b), w.mean, ch_unit(ch)); snprintf(line, sizeof(line), "avg %s", b); cfb_print(disp, line, 0, s_fh * 2);
 	fmt_si_f(b, sizeof(b), w.max,  ch_unit(ch)); snprintf(line, sizeof(line), "max %s", b); cfb_print(disp, line, 0, s_fh * 3);
@@ -291,7 +295,7 @@ static void page_hold(const struct device *disp)
 	uint8_t cycle = config_get()->ui_cycle_s ? config_get()->ui_cycle_s : 4;
 	enum stats_ch ch = cycle_channel(cycle);
 
-	char primary[12]; snprintf(primary, sizeof(primary), "HOLD %s", ch_label(ch));
+	char primary[20]; snprintf(primary, sizeof(primary), "HOLD %s", ch_label(ch));
 	render_status_bar(disp, primary);
 
 	struct stats_hold h;
@@ -300,10 +304,11 @@ static void page_hold(const struct device *disp)
 		return;
 	}
 	int64_t age = k_uptime_get() - h.since_uptime_ms;
-	char b[12], line[16];
+	char b[16], line[24];
 	fmt_si_f(b, sizeof(b), h.min, ch_unit(ch)); snprintf(line, sizeof(line), "min %s", b); cfb_print(disp, line, 0, s_fh);
 	fmt_si_f(b, sizeof(b), h.max, ch_unit(ch)); snprintf(line, sizeof(line), "max %s", b); cfb_print(disp, line, 0, s_fh * 2);
-	snprintf(line, sizeof(line), "for %lld s", (long long)(age / 1000));
+	uint32_t age_s = (age > 0) ? (uint32_t)(age / 1000) : 0u;
+	snprintf(line, sizeof(line), "for %u s", age_s);
 	cfb_print(disp, line, 0, s_fh * 3);
 }
 
@@ -315,14 +320,14 @@ static void page_energy(const struct device *disp)
 	double q_as = stats_energy_q_as();
 	int64_t ms = stats_energy_elapsed_ms();
 
-	char le[16], lq[16], lt[16];
+	char le[24], lq[24], lt[24];
 	/* E: mWh if < 1 Wh, else Wh. */
 	if (wh < 1.0) snprintf(le, sizeof(le), "E %.2f mWh", wh * 1000.0);
 	else          snprintf(le, sizeof(le), "E %.3f Wh",  wh);
 	/* Q: mAh always (compact). */
 	snprintf(lq, sizeof(lq), "Q %.2f mAh", q_as * 1000.0 / 3600.0);
-	int sec = (int)(ms / 1000);
-	snprintf(lt, sizeof(lt), "t %d:%02d:%02d", sec / 3600, (sec / 60) % 60, sec % 60);
+	uint32_t sec = (ms > 0) ? (uint32_t)(ms / 1000u) : 0u;
+	snprintf(lt, sizeof(lt), "t %u:%02u:%02u", sec / 3600u, (sec / 60u) % 60u, sec % 60u);
 
 	cfb_print(disp, le, 0, s_fh);
 	cfb_print(disp, lq, 0, s_fh * 2);
@@ -361,11 +366,11 @@ static void page_system(const struct device *disp)
 	render_status_bar(disp, "SYS");
 
 	int64_t up_ms = k_uptime_get();
-	int up_s = (int)(up_ms / 1000);
+	uint32_t up_s = (up_ms > 0) ? (uint32_t)(up_ms / 1000) : 0u;
 	int mv = power_batt_mv();
 
-	char lu[16], lb[16], lv[16];
-	snprintf(lu, sizeof(lu), "up %d:%02d:%02d", up_s / 3600, (up_s / 60) % 60, up_s % 60);
+	char lu[24], lb[24], lv[24];
+	snprintf(lu, sizeof(lu), "up %u:%02u:%02u", up_s / 3600u, (up_s / 60u) % 60u, up_s % 60u);
 	if (power_usb_present() && mv <= 0) {
 		snprintf(lb, sizeof(lb), "src USB");
 	} else if (mv > 0) {

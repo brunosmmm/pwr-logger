@@ -16,6 +16,7 @@ static double   s_sumsq;
 static int16_t  s_min;
 static int16_t  s_max;
 static uint32_t s_n;
+static uint64_t s_t_window_start;  /* master tick of the first sample in the window */
 
 static struct agg_window s_ready;
 static bool s_have;
@@ -28,13 +29,22 @@ void agg_reset(void)
 	s_min = INT16_MAX;
 	s_max = INT16_MIN;
 	s_n = 0;
+	s_t_window_start = 0;
 	s_have = false;
 }
 
-void agg_push(const int16_t *samples, uint16_t n)
+void agg_push(const int16_t *samples, uint16_t n, uint64_t t_first_tick)
 {
 	for (uint16_t i = 0; i < n; i++) {
 		int16_t v = samples[i];
+
+		/* Stamp the window's t_start on the very first sample of the window.
+		 * For samples after index 0 inside this block, we approximate with
+		 * the block's first-sample tick -- the per-sample delta is below the
+		 * resolution we care about for cosmetic window stamping. */
+		if (s_n == 0) {
+			s_t_window_start = t_first_tick;
+		}
 
 		s_sum += v;
 		s_sumsq += (double)v * (double)v;
@@ -51,7 +61,7 @@ void agg_push(const int16_t *samples, uint16_t n)
 			s_ready.rms = (float)sqrt(s_sumsq / s_n);
 			s_ready.min = s_min;
 			s_ready.max = s_max;
-			s_ready.t_start = 0; /* TODO: window start tick from block */
+			s_ready.t_start = s_t_window_start;
 			s_have = true;
 			if (s_cb) {
 				s_cb(&s_ready);   /* runs in producer thread; keep short */
