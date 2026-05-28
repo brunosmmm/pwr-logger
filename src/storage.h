@@ -2,6 +2,7 @@
 #define STORAGE_H_
 
 #include <stddef.h>
+#include <stdint.h>
 #include <zephyr/fs/fs.h>
 
 /*
@@ -35,5 +36,12 @@ int storage_read_file(const char *path, void *buf, size_t cap, size_t *out_len);
 /* Open `path` for write, truncating any existing content. Closes immediately
  * after writing all `len` bytes. Returns 0 / negative errno. */
 int storage_write_file(const char *path, const void *buf, size_t len);
+
+/* Free and total bytes on the mounted SD. Returns 0 on success; <0 if not
+ * mounted or fs_statvfs fails. Cheap (a few hundred us). */
+int storage_statvfs(uint64_t *free_b, uint64_t *total_b);
+
+/* Size of an arbitrary file in bytes via fs_stat. Returns 0 / -errno. */
+int storage_file_size(const char *path, uint64_t *size_b);
 
 #endif /* STORAGE_H_ */

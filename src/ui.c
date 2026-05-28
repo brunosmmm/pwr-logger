@@ -329,25 +329,60 @@ static void page_energy(const struct device *disp)
 	cfb_print(disp, lt, 0, s_fh * 3);
 }
 
+/* Pick a human prefix for a byte count, fit in ~10 chars: "12.3 MB", "428 KB", "1.05 GB". */
+static void fmt_bytes(char *out, size_t sz, uint64_t b)
+{
+	if (b >= (uint64_t)1024 * 1024 * 1024) {
+		snprintf(out, sz, "%.2f GB", (double)b / (1024.0 * 1024.0 * 1024.0));
+	} else if (b >= 1024u * 1024u) {
+		snprintf(out, sz, "%.1f MB", (double)b / (1024.0 * 1024.0));
+	} else if (b >= 1024u) {
+		snprintf(out, sz, "%u KB", (unsigned)(b / 1024u));
+	} else {
+		snprintf(out, sz, "%u B", (unsigned)b);
+	}
+}
+
 static void page_file(const struct device *disp)
 {
 	render_status_bar(disp, "FILE");
 
 	const char *path = storage_session_path();
-	const char *name = path ? strrchr(path, '/') : NULL;
+	const char *name = (path && *path) ? strrchr(path, '/') : NULL;
 	char shortname[16];
 	if (name && *(name + 1)) {
 		strncpy(shortname, name + 1, sizeof(shortname) - 1);
 		shortname[sizeof(shortname) - 1] = '\0';
 	} else {
-		snprintf(shortname, sizeof(shortname), "(none)");
+		snprintf(shortname, sizeof(shortname), "(no file)");
 	}
-	char l1[16], l2[16];
+
+	uint64_t file_b = 0, free_b = 0, total_b = 0;
+	if (path && *path) {
+		(void)storage_file_size(path, &file_b);
+	}
+	(void)storage_statvfs(&free_b, &total_b);
+
+	char l1[16], l2[16], l3[16];
+	char szbuf[12], freebuf[12];
+
 	snprintf(l1, sizeof(l1), "%s", shortname);
-	snprintf(l2, sizeof(l2), "drp %u", (unsigned)acq_drops());
+	if (file_b > 0) {
+		fmt_bytes(szbuf, sizeof(szbuf), file_b);
+		snprintf(l2, sizeof(l2), "sz %s", szbuf);
+	} else {
+		snprintf(l2, sizeof(l2), "sz --");
+	}
+	if (total_b > 0) {
+		fmt_bytes(freebuf, sizeof(freebuf), free_b);
+		snprintf(l3, sizeof(l3), "fr %s", freebuf);
+	} else {
+		snprintf(l3, sizeof(l3), "fr (unmnt)");
+	}
+
 	cfb_print(disp, l1, 0, s_fh);
 	cfb_print(disp, l2, 0, s_fh * 2);
-	/* Third line: TODO -- free SD space (needs an fs_statvfs helper). */
+	cfb_print(disp, l3, 0, s_fh * 3);
 }
 
 static void page_system(const struct device *disp)

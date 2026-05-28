@@ -136,6 +136,30 @@ int storage_write_file(const char *path, const void *buf, size_t len)
 	return crc;
 }
 
+int storage_statvfs(uint64_t *free_b, uint64_t *total_b)
+{
+	struct fs_statvfs st;
+	int rc = fs_statvfs(MOUNT_POINT, &st);
+	if (rc) {
+		return rc;
+	}
+	uint64_t blksz = (uint64_t)st.f_frsize;
+	if (free_b)  *free_b  = (uint64_t)st.f_bfree  * blksz;
+	if (total_b) *total_b = (uint64_t)st.f_blocks * blksz;
+	return 0;
+}
+
+int storage_file_size(const char *path, uint64_t *size_b)
+{
+	struct fs_dirent ent;
+	int rc = fs_stat(path, &ent);
+	if (rc) {
+		return rc;
+	}
+	if (size_b) *size_b = (uint64_t)ent.size;
+	return 0;
+}
+
 int storage_session_begin(struct storage_file *f)
 {
 	char path[80];
