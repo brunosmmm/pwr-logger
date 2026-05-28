@@ -15,6 +15,8 @@ void power_rail(bool on);    /* enable/disable the front-end 3.3 V rail */
 int  power_batt_mv(void);    /* last cached VDDH (battery) reading, mV; <0 = unknown */
 void power_batt_sample(void); /* refresh the reading; call ONLY when the SAADC is free
 			      * (fast channel stopped) -- e.g. boot, idle, offload */
+void power_batt_invalidate(void);          /* mark cached reading stale (-> "BAT --") */
+void power_batt_refresh_during_acq(void);  /* pause SAADC -> sample -> resume; ~50 ms drop */
 
 bool power_usb_present(void); /* VBUS detected right now (USB plugged) */
 

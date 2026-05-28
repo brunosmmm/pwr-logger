@@ -254,20 +254,31 @@ static void handle(enum logctl_event ev)
 		cancel_pending_idle();   /* aborted shutdown if we were in the warn window */
 		if (s_state == LS_IDLE) {
 			wake_idle();         /* full re-wake if we already finalized */
-		} else if (s_state == LS_LOGGING || s_state == LS_OFFLOAD) {
+		} else if (s_state == LS_LOGGING) {
 			/* The board's 3V3 source switches battery->VBUS on plug-
 			 * in; the brief input dip browns out the SSD1306 charge
 			 * pump the same way the unplug transient does (see
 			 * EV_USB_OFF below). Re-issue the init sequence so the
 			 * panel comes back. wake_idle() already does this on
-			 * the LS_IDLE branch. */
+			 * the LS_IDLE branch.
+			 *
+			 * The SAADC reading of VDDH was the battery voltage
+			 * (~3.7 V) before the switch; now VDDH = VBUS (~5 V)
+			 * via the regulator. Re-sample so the BAT/USB line in
+			 * the UI reflects the new source. Costs ~50 ms of
+			 * fast-channel samples (one drop). */
 			display_set_powered(true);
+			power_batt_refresh_during_acq();
+		} else if (s_state == LS_OFFLOAD) {
+			display_set_powered(true);   /* charge-pump rescue */
+			power_batt_sample();          /* SAADC free in OFFLOAD */
 		}
 		break;
 	case EV_USB_OFF:
 		s_usb = false;
 		if (s_state == LS_STOPPED || s_state == LS_OFFLOAD) {
 			/* Not recording: go dark on battery (3 s notice first). */
+			power_batt_sample();   /* SAADC free; record true batt voltage */
 			enter_idle();
 		} else if (s_state == LS_LOGGING) {
 			/* Keep recording. But: the on-board 3V3 regulator dips
@@ -284,8 +295,14 @@ static void handle(enum logctl_event ev)
 			 * the time we get here; if any of those needed re-arm
 			 * we'd see fs_write / acquisition errors, which we
 			 * haven't). */
-			LOG_INF("USB removed during LOGGING -> reinit OLED");
+			LOG_INF("USB removed during LOGGING -> reinit OLED + refresh batt");
 			display_set_powered(true);
+			/* VDDH = battery now (~3.7 V from LiPo) instead of VBUS
+			 * (~5 V). Without this refresh the cached s_batt_mv is
+			 * stale at the USB-era value and the BAT line shows
+			 * the wrong voltage until the session stops. Drops
+			 * ~50 ms of fast samples. */
+			power_batt_refresh_during_acq();
 		}
 		break;
 	case EV_AUTOOFF:

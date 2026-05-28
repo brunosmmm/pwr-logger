@@ -50,6 +50,25 @@ void power_batt_sample(void)
 	}
 }
 
+void power_batt_invalidate(void)
+{
+	s_batt_mv = -1;
+}
+
+/* Refresh s_batt_mv while the fast-channel acquisition is running. The SAADC
+ * is a single-core peripheral; the continuous AIN7 mode has to be paused for
+ * the VDDHDIV5 one-shot. Cost: one ~50 ms drop in the fast stream per call,
+ * for the abort/settle/sample/restart cycle. Intended for one-shot events like
+ * USB plug/unplug, NOT a periodic poll. Safe to call when acq is not running
+ * (acq_stop is a no-op then; acq_start re-arms the same continuous config). */
+void power_batt_refresh_during_acq(void)
+{
+	acq_stop();
+	k_sleep(K_MSEC(5));        /* let in-flight DMA + BUF_REQ drain */
+	power_batt_sample();
+	acq_start();
+}
+
 int power_batt_mv(void)
 {
 	return s_batt_mv;
