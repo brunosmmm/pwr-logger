@@ -363,6 +363,18 @@ static int cmd_ui_next(const struct shell *sh, size_t argc, char **argv)
 	return 0;
 }
 
+static int cmd_ui_icons(const struct shell *sh, size_t argc, char **argv)
+{
+	uint32_t ms = 5000;
+
+	if (argc >= 2) {
+		ms = (uint32_t)strtoul(argv[1], NULL, 0);
+	}
+	ui_icon_test(ms);
+	shell_print(sh, "icon test: %u ms (0x40..0x47 across status bar)", ms);
+	return 0;
+}
+
 SHELL_STATIC_SUBCMD_SET_CREATE(time_sub,
 	SHELL_CMD(get, NULL, "show current UTC time", cmd_time_get),
 	SHELL_CMD(set, NULL, "set time: pwr time set <epoch>", cmd_time_set),
@@ -387,8 +399,10 @@ SHELL_STATIC_SUBCMD_SET_CREATE(energy_sub,
 	SHELL_SUBCMD_SET_END);
 
 SHELL_STATIC_SUBCMD_SET_CREATE(ui_sub,
-	SHELL_CMD(page, NULL, "page [N]: show or set page", cmd_ui_page),
-	SHELL_CMD(next, NULL, "advance to next page",       cmd_ui_next),
+	SHELL_CMD(page,  NULL, "page [N]: show or set page", cmd_ui_page),
+	SHELL_CMD(next,  NULL, "advance to next page",       cmd_ui_next),
+	SHELL_CMD(icons, NULL, "icons [ms]: draw all 8 icons across the bar for N ms (default 5000)",
+		  cmd_ui_icons),
 	SHELL_SUBCMD_SET_END);
 
 SHELL_STATIC_SUBCMD_SET_CREATE(pwr_sub,

@@ -99,6 +99,31 @@ int64_t ui_idle_ms(void)
 	return k_uptime_get() - last;
 }
 
+/* Notice overlay containing all eight icon glyphs ('\x40'..'\x47'). The render
+ * thread will draw the notice via display_notice's existing path -- using the
+ * TEXT font. That's wrong for icons, so instead we steal the page-render slot
+ * for `duration_ms` by setting a flag the render thread checks; for now, just
+ * use display_notice with a string of icons and rely on the notice render
+ * picking up the icons font when the chars are in the 0x40..0x47 range.
+ *
+ * Implementation: stuff the 8 icon codepoints into a string and trigger a
+ * notice -- but the notice renderer uses the text font, so we route through
+ * a one-shot path that switches to the icons font before drawing. */
+static atomic_t s_icon_test_until_ms;
+
+bool ui_icon_test_active(void)
+{
+	int32_t remaining = (int32_t)((uint32_t)atomic_get(&s_icon_test_until_ms) -
+				      k_uptime_get_32());
+	return remaining > 0;
+}
+
+void ui_icon_test(uint32_t duration_ms)
+{
+	atomic_set(&s_icon_test_until_ms,
+		   (atomic_val_t)(k_uptime_get_32() + duration_ms));
+}
+
 void ui_hold_clear_current(void)
 {
 	enum ui_page p = page_get();
@@ -228,6 +253,15 @@ static void render_status_bar(const struct device *disp, const char *primary)
 
 	/* --- icon slots -------------------------------------------------- */
 	cfb_framebuffer_set_font(disp, display_font_icons());
+
+	if (ui_icon_test_active()) {
+		/* DIAG path: draw all 8 glyphs in a single row across the bar
+		 * at 16 px each (= 128 px). Skips the conditional logic so
+		 * the user can visually check each bitmap regardless of state. */
+		cfb_print(disp, "\x40\x41\x42\x43\x44\x45\x46\x47", 0, 0);
+		cfb_invert_area(disp, 0, 0, 128, 16);
+		return;
+	}
 
 	if (!usb && pct >= 0) {
 		/* Bucket SoC into the five battery glyphs: <12 = empty,

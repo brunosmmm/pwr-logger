@@ -43,4 +43,12 @@ enum ui_page ui_get_page(void);
  * display.c to decide when to blank the panel for idle. */
 int64_t ui_idle_ms(void);
 
+/* DIAG: draw every registered icon glyph across the bar for `duration_ms`.
+ * Lets the user visually verify the bitmaps render correctly without having
+ * to set up each enabling condition (battery, BLE-subscribed, LOGGING, ...).
+ * The status-bar renderer checks ui_icon_test_active() and substitutes the
+ * 8 icon glyphs in place of the conditional ones. */
+void ui_icon_test(uint32_t duration_ms);
+bool ui_icon_test_active(void);
+
 #endif /* UI_H_ */
