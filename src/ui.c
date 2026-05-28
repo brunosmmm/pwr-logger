@@ -435,36 +435,54 @@ static void page_file(const struct device *disp)
 
 	const char *path = storage_session_path();
 	const char *name = (path && *path) ? strrchr(path, '/') : NULL;
-	char shortname[16];
-	if (name && *(name + 1)) {
-		strncpy(shortname, name + 1, sizeof(shortname) - 1);
-		shortname[sizeof(shortname) - 1] = '\0';
+	if (name) {
+		name++;          /* skip the leading '/' */
+	}
+
+	char l1[16], l2[16], l3[24];
+	/* Parse the UTC-formatted timestamp "YYYYMMDDTHHMMSSZ.tdms" the
+	 * logger uses for synced sessions. Decoded "YYYY-MM-DD" / "HH:MM:SS Z"
+	 * is the useful information in the name (more readable than packed
+	 * digits, and what a human reads off a calendar). For the indexed
+	 * fallback "logNNNN.tdms" the parse fails -- show the raw name. */
+	if (name && strlen(name) >= 16 && name[8] == 'T' && name[15] == 'Z') {
+		snprintf(l1, sizeof(l1), "%.4s-%.2s-%.2s",
+			 name, name + 4, name + 6);          /* date */
+		snprintf(l2, sizeof(l2), "%.2s:%.2s:%.2s Z",
+			 name + 9, name + 11, name + 13);    /* time + Z */
+	} else if (name && *name) {
+		/* Indexed fallback or other: show raw name truncated. */
+		strncpy(l1, name, sizeof(l1) - 1);
+		l1[sizeof(l1) - 1] = '\0';
+		l2[0] = '\0';
 	} else {
-		snprintf(shortname, sizeof(shortname), "(no file)");
+		snprintf(l1, sizeof(l1), "(no file)");
+		l2[0] = '\0';
 	}
 
 	/* Cached snapshots populated once per second by the logger writer. */
 	uint64_t file_b = 0, free_b = 0;
 	logger_sd_usage(&file_b, &free_b, NULL);
 
-	char l1[24], l2[24], l3[24];
 	char szbuf[12], freebuf[12];
-	snprintf(l1, sizeof(l1), "%s", shortname);
-	if (file_b > 0) {
+	if (file_b > 0 && free_b > 0) {
 		fmt_bytes(szbuf, sizeof(szbuf), file_b);
-		snprintf(l2, sizeof(l2), "sz %s", szbuf);
-	} else {
-		snprintf(l2, sizeof(l2), "sz --");
-	}
-	if (free_b > 0) {
 		fmt_bytes(freebuf, sizeof(freebuf), free_b);
-		snprintf(l3, sizeof(l3), "fr %s", freebuf);
+		snprintf(l3, sizeof(l3), "%s f%s", szbuf, freebuf);
+	} else if (file_b > 0) {
+		fmt_bytes(szbuf, sizeof(szbuf), file_b);
+		snprintf(l3, sizeof(l3), "%s", szbuf);
+	} else if (free_b > 0) {
+		fmt_bytes(freebuf, sizeof(freebuf), free_b);
+		snprintf(l3, sizeof(l3), "free %s", freebuf);
 	} else {
-		snprintf(l3, sizeof(l3), "fr ...");
+		snprintf(l3, sizeof(l3), "(no data)");
 	}
 
 	cfb_print(disp, l1, 0, s_fh);
-	cfb_print(disp, l2, 0, s_fh * 2);
+	if (l2[0]) {
+		cfb_print(disp, l2, 0, s_fh * 2);
+	}
 	cfb_print(disp, l3, 0, s_fh * 3);
 }
 
@@ -472,18 +490,35 @@ static void page_system(const struct device *disp)
 {
 	render_status_bar(disp, "SYS");
 
-	int64_t up_ms = k_uptime_get();
-	uint32_t up_s = (up_ms > 0) ? (uint32_t)(up_ms / 1000) : 0u;
 	int mv = power_batt_mv();
 	int pct = power_batt_pct();
 
-	char lu[24], lb[24], lv[24];
-	snprintf(lu, sizeof(lu), "up %u:%02u:%02u", up_s / 3600u, (up_s / 60u) % 60u, up_s % 60u);
-	/* USB takes priority: when on USB the SAADC battery channel reads VDD
-	 * (~3.3 V from the regulator), which is NOT the battery voltage and is
-	 * misleading. Only show "bat <V>" when the device is actually running
-	 * from battery; on USB the source label is the useful information.
-	 * SoC %% is the primary readout; the raw mV is auxiliary for diagnosis. */
+	char ld[16], lt[16], lb[24];
+
+	/* Wall clock: the user complained that no page shows current date /
+	 * time. SYS is the natural home -- system status answers 'when, what
+	 * state'. Two lines for date + time-of-day; the trailing 'Z' on the
+	 * time is replaced with '?' when clk_is_synced() is false so the user
+	 * can tell at a glance whether the displayed time is authoritative
+	 * (set via 'pwr time set ...') or just an estimate restored from NVS. */
+	time_t now = clk_now();
+	if (clk_has_time() && now > 0) {
+		struct tm tm;
+		gmtime_r(&now, &tm);
+		snprintf(ld, sizeof(ld), "%04d-%02d-%02d",
+			 tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday);
+		snprintf(lt, sizeof(lt), "%02d:%02d:%02d %c",
+			 tm.tm_hour, tm.tm_min, tm.tm_sec,
+			 clk_is_synced() ? 'Z' : '?');
+	} else {
+		snprintf(ld, sizeof(ld), "clock unset");
+		snprintf(lt, sizeof(lt), "(no time)");
+	}
+
+	/* Power source on line 3. USB takes priority: on USB the SAADC battery
+	 * channel reads VDD via the divider (~4.8 V meaningless), so only show
+	 * 'bat <V>' when actually running from battery. SoC %% is the primary
+	 * readout; raw mV is auxiliary for diagnosis. */
 	if (power_usb_present()) {
 		snprintf(lb, sizeof(lb), "src USB");
 	} else if (pct >= 0) {
@@ -492,17 +527,10 @@ static void page_system(const struct device *disp)
 	} else {
 		snprintf(lb, sizeof(lb), "bat --");
 	}
-	/* Per-session health: fast-channel acquisition rate + drop count. Both
-	 * are populated by the logger writer thread (samples cleared each second). */
-	uint32_t rate = logger_samples_per_sec();
-	if (rate > 0) {
-		snprintf(lv, sizeof(lv), "%u/s drp %u", (unsigned)rate, (unsigned)acq_drops());
-	} else {
-		snprintf(lv, sizeof(lv), "drp %u", (unsigned)acq_drops());
-	}
-	cfb_print(disp, lu, 0, s_fh);
-	cfb_print(disp, lb, 0, s_fh * 2);
-	cfb_print(disp, lv, 0, s_fh * 3);
+
+	cfb_print(disp, ld, 0, s_fh);
+	cfb_print(disp, lt, 0, s_fh * 2);
+	cfb_print(disp, lb, 0, s_fh * 3);
 }
 
 /* ---- top-level render dispatch ----------------------------------------- */
