@@ -21,6 +21,7 @@ void power_rail(bool on)
 {
 	if (gpio_is_ready_dt(&rail)) {
 		gpio_pin_set_dt(&rail, on ? 1 : 0);
+		LOG_INF("rail -> %s (pin P0.%u)", on ? "ON" : "OFF", rail.pin);
 	}
 }
 

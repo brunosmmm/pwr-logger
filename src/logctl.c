@@ -98,6 +98,7 @@ static K_WORK_DELAYABLE_DEFINE(idle_finalize_work, idle_finalize_fn);
 
 static void enter_idle_finalize(void)
 {
+	LOG_INF("enter_idle_finalize: cutting rail, going to LS_IDLE");
 	(void)storage_unmount();         /* SD loses power with the rail */
 	ble_stream_set_adv(config_get()->idle_ble);
 	display_set_powered(false);      /* render thread stops before rail cuts */
