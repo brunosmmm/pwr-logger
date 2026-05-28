@@ -9,6 +9,7 @@
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/logging/log.h>
 #include <hal/nrf_gpio.h>
+#include <hal/nrf_uarte.h>
 
 LOG_MODULE_REGISTER(controls, LOG_LEVEL_INF);
 
@@ -344,12 +345,26 @@ void controls_init(void)
 
 	gpio_pin_configure_dt(&led_g, GPIO_OUTPUT_INACTIVE);
 
+	/* CRITICAL: MCUboot enables UARTE0 with PSEL.TXD=9 (sysbuild/
+	 * mcuboot.overlay points its console at &uart0 which uses the
+	 * upstream uart0_default pinctrl mapping UART_TX to P0.9). MCUboot's
+	 * chain_load path doesn't disable the peripheral before jumping to
+	 * the app, so UARTE0 remains ENABLED with the LED pad owned by
+	 * the peripheral. While a peripheral owns a pad, PIN_CNF writes
+	 * succeed (the register reads back as written) but the actual pin
+	 * is driven by the peripheral -- UART idle = TX high = VDD = 1.8 V,
+	 * exactly matching the "pin stuck at 1.8 V regardless of GPIO"
+	 * symptom. Stop UARTE0 and disconnect its PSELs before we touch
+	 * PIN_CNF so the GPIO actually owns the pad. */
+	nrf_uarte_task_trigger(NRF_UARTE0, NRF_UARTE_TASK_STOPTX);
+	nrf_uarte_task_trigger(NRF_UARTE0, NRF_UARTE_TASK_STOPRX);
+	nrf_uarte_disable(NRF_UARTE0);
+	nrf_uarte_txrx_pins_disconnect(NRF_UARTE0);
+
 	/* Belt-and-braces against residual pull on P0.9: the pad is a freed
 	 * NFC pin (UICR.NFCPINS = 0xfffffffe via nfct-pins-as-gpios) and was
-	 * UART0 TX in the board's default pinctrl. Even with &uart0
-	 * status=disabled, observed behaviour was a weak pull-up holding the
-	 * LED visibly lit during the off-half of the blink. Force the pin
-	 * to OUTPUT + NOPULL at the metal layer to drop any residue. */
+	 * UART0 TX in the board's default pinctrl. Force the pin to OUTPUT +
+	 * NOPULL at the metal layer to drop any residue. */
 	nrf_gpio_cfg(led_g.pin,
 		     NRF_GPIO_PIN_DIR_OUTPUT,
 		     NRF_GPIO_PIN_INPUT_DISCONNECT,
