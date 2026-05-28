@@ -4,6 +4,13 @@
 /* Central tunables. Front-end scaling defaults must be confirmed against the
  * actual hardware (shunt value, INA240 gain variant, SAADC ref/gain). */
 
+/* Build identifier shown in `pwr status`. Bump for each ship-able build;
+ * useful for verifying OTA outcomes (does the running image match what
+ * was applied?). */
+#ifndef APP_BUILD_TAG
+#define APP_BUILD_TAG "v1.0"
+#endif
+
 /* ---- Time base & fast acquisition --------------------------------------- */
 #define MASTER_CLOCK_HZ          1000000u   /* 1 MHz free-running master tick  */
 /* SAADC output (logged) rate. The SAADC hardware-oversamples ACQ_OVERSAMPLE

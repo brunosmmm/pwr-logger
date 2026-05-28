@@ -9,6 +9,7 @@
 #include "logger.h"
 #include "controls.h"
 #include "ota.h"
+#include "app_config.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -22,6 +23,7 @@
 #include <zephyr/fs/fs.h>
 #include <zephyr/sys/crc.h>
 #include <zephyr/dfu/mcuboot.h>
+#include <zephyr/sys/reboot.h>
 #include "storage.h"
 #include "usbd_pwr_bulk.h"
 
@@ -51,6 +53,7 @@ static int cmd_status(const struct shell *sh, size_t argc, char **argv)
 	} else {
 		strcpy(b, "(unset)");
 	}
+	shell_print(sh, "build:  %s", APP_BUILD_TAG);
 	shell_print(sh, "state:  %s", logctl_state_name(logctl_state()));
 	shell_print(sh, "time:   %s (synced=%d)", b, clk_is_synced());
 	shell_print(sh, "uptime: %lld ms", k_uptime_get());
@@ -691,6 +694,15 @@ static const char *ota_swap_str(int t)
 	}
 }
 
+static int cmd_reboot(const struct shell *sh, size_t argc, char **argv)
+{
+	ARG_UNUSED(argc); ARG_UNUSED(argv);
+	shell_print(sh, "rebooting");
+	k_sleep(K_MSEC(200));   /* let the shell finish writing */
+	sys_reboot(SYS_REBOOT_COLD);
+	return 0;   /* unreachable */
+}
+
 static int cmd_ota_status(const struct shell *sh, size_t argc, char **argv)
 {
 	ARG_UNUSED(argc); ARG_UNUSED(argv);
@@ -755,6 +767,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(pwr_sub,
 	SHELL_CMD(offload,  NULL, "stop + expose SD as USB drive", cmd_offload),
 	SHELL_CMD(resume,   NULL, "leave offload, resume logging", cmd_resume),
 	SHELL_CMD(poweroff, NULL, "clean stop + power off", cmd_poweroff),
+	SHELL_CMD(reboot,   NULL, "cold reset (triggers pending MCUboot swap/revert)", cmd_reboot),
 	SHELL_CMD(batt,     NULL, "battery (VDDH) voltage", cmd_batt),
 	SHELL_CMD(lowbatt,  NULL, "simulate low-battery event (test)", cmd_lowbatt),
 	SHELL_CMD(usb,      NULL, "simulate VBUS on/off (test)", cmd_usb),
