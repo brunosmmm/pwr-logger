@@ -67,6 +67,35 @@ BULK_IN_EP   = 0x84   # endpoint address inside that interface
 
 # ---- CDC (shell) helpers ----------------------------------------------------
 
+PROMPT = b'uart:~$'
+
+
+def wait_for_prompt(s, timeout=3.0):
+    """Drain bytes from `s` until the Zephyr shell prompt appears.
+
+    Successive `pwr download` calls can otherwise race: pwrdl.py exits,
+    re-launches, sends the next command while the device's prior
+    cmd_download is still in cleanup (fs_close + storage_unmount).
+    The shell queues the new command, the host opens the bulk endpoint
+    and times out waiting for magic that never arrives. Waiting for a
+    prompt before issuing the command serializes us cleanly."""
+    deadline = time.monotonic() + timeout
+    s.write(b'\r\n')          # nudge a fresh prompt
+    s.flush()
+    buf = bytearray()
+    while time.monotonic() < deadline:
+        chunk = s.read(256)
+        if chunk:
+            buf += chunk
+            if PROMPT in buf:
+                # Drain a moment so the prompt is fully consumed before
+                # the next command lands on top of it.
+                time.sleep(0.05)
+                s.reset_input_buffer()
+                return True
+    return False
+
+
 def send_cmd(s, cmd, settle=0.4):
     """Write a shell command + CR, give the device a moment to act."""
     s.reset_input_buffer()
@@ -176,7 +205,11 @@ def download(shell, name, dest, timeout=60.0):
     bulk = open_bulk()
     deadline = time.monotonic() + timeout
 
-    shell.reset_input_buffer()
+    # Serialize against the prior command's tail (file close + unmount
+    # take ~200-500 ms after a multi-MB download). Without this,
+    # back-to-back invocations race and the second one's bulk read
+    # times out waiting for magic.
+    wait_for_prompt(shell)
     shell.write(f"pwr download {name}\r\n".encode())
     shell.flush()
     t0 = time.monotonic()
