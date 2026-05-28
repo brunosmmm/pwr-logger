@@ -16,6 +16,7 @@ target_sources(app PRIVATE
     src/logger.c
     src/ble_stream.c
     src/usb_msc.c
+    src/usbd_pwr_bulk.c
     src/config.c
     src/clock.c
     src/cli.c

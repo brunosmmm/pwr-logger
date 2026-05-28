@@ -21,6 +21,7 @@
 #include <zephyr/fs/fs.h>
 #include <zephyr/sys/crc.h>
 #include "storage.h"
+#include "usbd_pwr_bulk.h"
 
 /*
  * Console front-end (Zephyr shell over the CDC-ACM USB console). Commands are
@@ -427,21 +428,15 @@ static const struct device *console_dev = DEVICE_DT_GET(DT_CHOSEN(zephyr_console
  * TX irq), but it has nothing queued during cmd_download so the events
  * are no-ops on its side. */
 
-/* The CDC ACM device_next driver caps single-in-flight TX at ~160 KB/s --
- * see cdc_acm_tx_fifo_handler's CDC_ACM_TX_FIFO_BUSY guard. Several attempts
- * to bypass (uart_fifo_fill + irq_tx_enable, periodic kicks, bigger buffer
- * pools) didn't move the needle. uart_poll_out + k_yield every 64 B is the
- * cleanest pattern that stays at the ceiling without misbehaving. */
-#define DL_YIELD_EVERY 64
-
+/* Stream a buffer over the dedicated vendor-class bulk-IN endpoint
+ * (Interface 3, EP 0x84). pwr_bulk_send blocks only when all
+ * PWR_BULK_BUF_COUNT (=8) in-flight transfer slots are busy, giving us
+ * multiple concurrent USB transfers and saturating the FS bulk endpoint.
+ * Falls back to a CDC-shell error if the host hasn't claimed the interface,
+ * but in practice the host script does that BEFORE issuing 'pwr download'. */
 static void dl_write(const uint8_t *data, size_t len)
 {
-	for (size_t i = 0; i < len; i++) {
-		uart_poll_out(console_dev, data[i]);
-		if ((i & (DL_YIELD_EVERY - 1)) == (DL_YIELD_EVERY - 1)) {
-			k_yield();
-		}
-	}
+	(void)pwr_bulk_send(data, len);
 }
 
 static void dl_write_u32_le(uint32_t v)
@@ -554,6 +549,9 @@ static int cmd_download(const struct shell *sh, size_t argc, char **argv)
 
 	/* Footer: CRC32 LE. */
 	dl_write_u32_le(crc);
+
+	/* Wait for all in-flight bulk transfers to complete before we return. */
+	pwr_bulk_flush();
 
 	if (we_mounted) {
 		(void)storage_unmount();

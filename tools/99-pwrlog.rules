@@ -1,0 +1,8 @@
+# Allow non-root access to the pwr-logger's vendor-class bulk interface.
+# Required for tools/pwrdl_bulk.py to claim the interface via libusb.
+#
+# Install:
+#   sudo cp tools/99-pwrlog.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload
+#   sudo udevadm trigger    # or just unplug + replug the device
+SUBSYSTEM=="usb", ATTRS{idVendor}=="2fe3", ATTRS{idProduct}=="0006", MODE="0666"
