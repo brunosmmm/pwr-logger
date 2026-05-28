@@ -8,6 +8,7 @@
 #include <zephyr/device.h>
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/logging/log.h>
+#include <hal/nrf_gpio.h>
 
 LOG_MODULE_REGISTER(controls, LOG_LEVEL_INF);
 
@@ -298,6 +299,19 @@ void controls_init(void)
 	}
 
 	gpio_pin_configure_dt(&led_g, GPIO_OUTPUT_INACTIVE);
+
+	/* Belt-and-braces against residual pull on P0.9: the pad is a freed
+	 * NFC pin (UICR.NFCPINS = 0xfffffffe via nfct-pins-as-gpios) and was
+	 * UART0 TX in the board's default pinctrl. Even with &uart0
+	 * status=disabled, observed behaviour was a weak pull-up holding the
+	 * LED visibly lit during the off-half of the blink. Force the pin
+	 * to OUTPUT + NOPULL at the metal layer to drop any residue. */
+	nrf_gpio_cfg(led_g.pin,
+		     NRF_GPIO_PIN_DIR_OUTPUT,
+		     NRF_GPIO_PIN_INPUT_DISCONNECT,
+		     NRF_GPIO_PIN_NOPULL,
+		     NRF_GPIO_PIN_S0S1,
+		     NRF_GPIO_PIN_NOSENSE);
 
 	btn_install(&rec_btn,     &rec_g,    rec_edge);
 	btn_install(&rotate_btn,  &rotate_g, rotate_edge);

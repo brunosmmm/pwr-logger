@@ -1,6 +1,8 @@
 #ifndef CONTROLS_H_
 #define CONTROLS_H_
 
+#include <stdbool.h>
+
 /*
  * Front-panel controls: REC / ROTATE momentary buttons, OFFLOAD maintained
  * switch, plus a status LED. All inputs are GPIO interrupts with software

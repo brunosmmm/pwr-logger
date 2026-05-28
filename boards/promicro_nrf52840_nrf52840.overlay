@@ -49,6 +49,22 @@
  * own the pads via plain GPIO. */
 &uart0 { status = "disabled"; };
 
+/* PWM0 is wired to P0.15 (the board's onboard "Red LED") in the upstream
+ * common DTS. We don't use either the board LED or PWM, and leaving the
+ * peripheral enabled means its pinctrl gets applied at boot, which can
+ * leave a stale pull on P0.15. Disable. */
+&pwm0 { status = "disabled"; };
+
+/* The board enables the IEEE 802.15.4 radio. We use BLE (which shares the
+ * RADIO peripheral) -- the 802.15.4 driver doesn't conflict at runtime
+ * but it links code we don't use and registers an init hook. Off. */
+&ieee802154 { status = "disabled"; };
+
+/* The board's onboard "Red LED" gpio-leds entry claims P0.15 as a GPIO
+ * output at boot. We don't use it; disable so the pin stays free of any
+ * default-config residue. */
+&led0 { status = "disabled"; };
+
 /* I2C1 default pins (P1.04 / P1.06) are repurposed as SD-CS and CNVR; re-map the
  * TWIM1 bus to two freed pins for a DEDICATED display I2C, so the SSD1306 never
  * contends with the INA228 on TWIM0. (nRF52840 TWIM max is 400 kHz, no FM+, which
