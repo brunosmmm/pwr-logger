@@ -12,6 +12,7 @@
 #include "ina228.h"
 #include "app_config.h"
 #include "logger.h"
+#include "ble_stream.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -199,26 +200,71 @@ static enum stats_ch cycle_channel(uint8_t cycle_s)
 	return s_cycle[idx];
 }
 
-/* ---- status bar (yellow strip @ y=0..15, inverted) ---------------------- */
+/* ---- status bar (yellow strip @ y=0..15, inverted) ---------------------- *
+ * Layout (128 x 16):
+ *   x=0..15   battery icon  (5 fill levels, picked by SoC bucket; blank on USB)
+ *   x=16..31  USB plug  if VBUS present, else REC dot if LS_LOGGING, else blank
+ *   x=32..47  Bluetooth icon if a central is subscribed, else blank
+ *   x=48..127 8 chars of text:  "[ST3] primary"  e.g.  "REC LIVE"  or  "STA SYS"
+ *
+ * Implementation: switch to the 16x16 icons font (CFB index 1) to draw the
+ * three icon slots, switch back to font 0 for the text. The whole strip is
+ * inverted by cfb_invert_area at the end -- icons become dark glyphs on
+ * bright yellow background, matching the inverted text below.
+ *
+ * Icon glyph codepoints live in icons_font.c:
+ *   '\x40'..'\x44'  battery 0..100 %% in 25 %% steps
+ *   '\x45'          USB plug
+ *   '\x46'          Bluetooth
+ *   '\x47'          REC dot
+ */
 static void render_status_bar(const struct device *disp, const char *primary)
 {
-	/* Layout: [STATE]  [primary text]  e.g. "REC  USB"  or  "REC  ROLL 10s". */
-	char bar[20];
 	const char *st = state_abbr3(logctl_state());
 	bool usb = power_usb_present();
 	int pct = power_batt_pct();
+	enum logctl_state lst = logctl_state();
+	char one[2] = { 0, 0 };
+	char text[14];
+
+	/* --- icon slots -------------------------------------------------- */
+	cfb_framebuffer_set_font(disp, 1);   /* 16x16 icons font */
+
+	if (!usb && pct >= 0) {
+		/* Bucket SoC into the five battery glyphs: <12 = empty,
+		 * 12..37 = 25%, 37..62 = 50%, 62..87 = 75%, >=87 = full. */
+		uint8_t b = (pct >= 87) ? 4 :
+			    (pct >= 62) ? 3 :
+			    (pct >= 37) ? 2 :
+			    (pct >= 12) ? 1 : 0;
+		one[0] = (char)(0x40 + b);
+		cfb_print(disp, one, 0, 0);
+	}
+
+	if (usb) {
+		one[0] = '\x45';   /* USB plug */
+		cfb_print(disp, one, 16, 0);
+	} else if (lst == LS_LOGGING) {
+		one[0] = '\x47';   /* REC dot */
+		cfb_print(disp, one, 16, 0);
+	}
+
+	if (ble_stream_subscribed()) {
+		one[0] = '\x46';   /* Bluetooth */
+		cfb_print(disp, one, 32, 0);
+	}
+
+	/* --- text right of the icons ------------------------------------ */
+	cfb_framebuffer_set_font(disp, 0);   /* back to default 10x16 text font */
 
 	if (primary && *primary) {
-		snprintf(bar, sizeof(bar), "%-3s %s", st, primary);
-	} else if (usb) {
-		snprintf(bar, sizeof(bar), "%-3s USB", st);
-	} else if (pct >= 0) {
-		snprintf(bar, sizeof(bar), "%-3s BAT %d%%", st, pct);
+		snprintf(text, sizeof(text), "%-3s %s", st, primary);
 	} else {
-		snprintf(bar, sizeof(bar), "%-3s BAT", st);
+		snprintf(text, sizeof(text), "%-3s", st);
 	}
-	cfb_print(disp, bar, 0, 0);
-	/* Invert the entire yellow strip -> bright background, dark text. */
+	cfb_print(disp, text, 48, 0);
+
+	/* Invert the entire yellow strip -> bright background, dark icons + text. */
 	cfb_invert_area(disp, 0, 0, 128, 16);
 }
 

@@ -70,6 +70,8 @@ struct __packed rec_status {
 #define INA228_TEMP_C_LSB  7.8125e-3f
 
 static volatile bool s_subscribed;
+
+bool ble_stream_subscribed(void) { return s_subscribed; }
 static int64_t s_last_fast;   /* FAST throttle */
 static int64_t s_last_slow;   /* SLOW throttle */
 
