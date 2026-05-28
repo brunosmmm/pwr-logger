@@ -401,18 +401,37 @@ static int cmd_ui_icons(const struct shell *sh, size_t argc, char **argv)
  * formatting; the shell prompt that re-appears after the command finishes
  * is just trailing noise the host can ignore. */
 
-#define DL_CHUNK 256
+#define DL_CHUNK 1024
 
 static const struct device *console_dev = DEVICE_DT_GET(DT_CHOSEN(zephyr_console));
 
-/* Bulk write to the CDC console via uart_poll_out, but with k_yield()
- * between chunks so the CDC class's TX worker can drain the ring buffer
- * into USB transactions of useful size. Without the yield, the shell
- * thread monopolises the CPU and the CDC worker only runs when the ring
- * buffer is full -- which means most bytes ship in many small USB
- * transactions and we cap at ~5 KB/s. Yielding every 64 bytes lets the
- * worker batch into ~64-byte USB transfers (one bulk EP packet) and
- * brings the throughput close to the FS bulk-EP ceiling. */
+/* Batched write to the CDC console.
+ *
+ * The real bottleneck on the previous uart_poll_out path was that the CDC
+ * ACM driver schedules its TX worker with K_MSEC(1) after every poll_out
+ * call (subsys/usb/device_next/class/usbd_cdc_acm.c:1018). Bytes accumulate
+ * in the ring buffer for up to 1 ms before the worker drains them to USB --
+ * capping us at ~160 KB/s CPU-bound regardless of buffer pool size.
+ *
+ * Two changes here:
+ * 1. uart_fifo_fill puts the whole chunk in the ring buffer in one critical
+ *    section instead of byte-at-a-time poll_out calls. CONFIG_USBD_CDC_ACM_
+ *    WORKQUEUE=n makes check_wq_ctx() always true so it's safe from any
+ *    thread.
+ * 2. uart_irq_tx_enable submits the worker immediately (no K_MSEC(1) delay,
+ *    cdc_acm.c:734), so the ring buffer drains without waiting for a timer
+ *    tick.
+ *
+ * We never install our own UART IRQ callback, so the shell's RX handler
+ * stays intact. The shell does observe TX-ready events (since we enable
+ * TX irq), but it has nothing queued during cmd_download so the events
+ * are no-ops on its side. */
+
+/* The CDC ACM device_next driver caps single-in-flight TX at ~160 KB/s --
+ * see cdc_acm_tx_fifo_handler's CDC_ACM_TX_FIFO_BUSY guard. Several attempts
+ * to bypass (uart_fifo_fill + irq_tx_enable, periodic kicks, bigger buffer
+ * pools) didn't move the needle. uart_poll_out + k_yield every 64 B is the
+ * cleanest pattern that stays at the ceiling without misbehaving. */
 #define DL_YIELD_EVERY 64
 
 static void dl_write(const uint8_t *data, size_t len)
@@ -473,10 +492,7 @@ static int cmd_ls(const struct shell *sh, size_t argc, char **argv)
 	return 0;
 }
 
-/* BSS to keep cmd_download's stack footprint small -- the shell_uart
- * thread runs with a 4 KB stack now (see prj.conf) but the FatFs read
- * path plus a 256 B chunk buf would still be tight; safer to keep them
- * here. Serialised by the shell single-execution model. */
+/* BSS to keep cmd_download's stack footprint small. */
 static uint8_t dl_buf[DL_CHUNK];
 static char    dl_path[80];
 
