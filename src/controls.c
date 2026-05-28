@@ -111,9 +111,9 @@ static void led_tick_fn(struct k_work *w)
 		atomic_dec(&s_flash_ticks);
 	} else {
 		switch (logctl_state()) {
-		case LS_LOGGING: on = true;                       break;
-		case LS_OFFLOAD: on = (cnt % 8u) < 4u;            break;  /* 200/200 ms */
-		case LS_STOPPED: on = (cnt % 20u) < 10u;          break;  /* 500/500 ms */
+		case LS_LOGGING: on = (cnt % 20u) < 10u;          break;  /* 1 Hz blink */
+		case LS_OFFLOAD: on = (cnt % 8u)  < 4u;            break;  /* 2.5 Hz blink */
+		case LS_STOPPED: /* quiet when idle-but-ready */
 		case LS_IDLE:    /* rail's off -- LED off too */
 		case LS_SHIP:
 		default:         on = false;                      break;
