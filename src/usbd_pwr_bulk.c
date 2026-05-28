@@ -198,12 +198,15 @@ int pwr_bulk_send(const uint8_t *data, size_t len)
 		uint8_t ep = pwr_bulk_get_bulk_in(pd->c_data);
 		size_t chunk = len;
 
-		/* Cap chunk at MPS * some packets so each transfer is sized
-		 * roughly the same as the UDC pool entry. The UDC pool size
-		 * is set via CONFIG_UDC_BUF_POOL_SIZE; transfers larger than
-		 * the per-buf size split or fail at usbd_ep_buf_alloc. */
-		if (chunk > 1024) {
-			chunk = 1024;
+		/* Bigger USB transfers amortize the per-enqueue cost (sem
+		 * wait, alloc, IRQ on completion) and let the UDC chain the
+		 * DMA further ahead between producer wake-ups. 2 KB / 32
+		 * MPS-64 packets is the experimental sweet spot here. Pool
+		 * sized at PWR_BULK_BUF_COUNT * chunk = 16 KB keeps all 8
+		 * concurrent slots fillable; CONFIG_UDC_BUF_POOL_SIZE
+		 * provides exactly that. */
+		if (chunk > 4096) {
+			chunk = 4096;
 		}
 
 		/* Alloc from the shared UDC buf pool. The pool can be smaller
