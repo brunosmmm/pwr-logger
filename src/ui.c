@@ -220,12 +220,10 @@ static enum stats_ch cycle_channel(uint8_t cycle_s)
  */
 static void render_status_bar(const struct device *disp, const char *primary)
 {
-	const char *st = state_abbr3(logctl_state());
 	bool usb = power_usb_present();
 	int pct = power_batt_pct();
 	enum logctl_state lst = logctl_state();
 	char one[2] = { 0, 0 };
-	char text[14];
 
 	/* --- icon slots -------------------------------------------------- */
 	cfb_framebuffer_set_font(disp, 1);   /* 16x16 icons font */
@@ -242,7 +240,7 @@ static void render_status_bar(const struct device *disp, const char *primary)
 	}
 
 	if (usb) {
-		one[0] = '\x45';   /* USB plug */
+		one[0] = '\x45';   /* USB-connected link icon */
 		cfb_print(disp, one, 16, 0);
 	} else if (lst == LS_LOGGING) {
 		one[0] = '\x47';   /* REC dot */
@@ -254,15 +252,14 @@ static void render_status_bar(const struct device *disp, const char *primary)
 		cfb_print(disp, one, 32, 0);
 	}
 
-	/* --- text right of the icons ------------------------------------ */
-	cfb_framebuffer_set_font(disp, 0);   /* back to default 10x16 text font */
-
+	/* --- primary text right of the icons ---------------------------- *
+	 * Just the per-page label now (e.g. "LIVE", "ROLL 10s") -- the
+	 * state-abbrev "REC"/"STP"/"OFF" is redundant with the REC-dot /
+	 * link / (no-icon) state slot above and was duplicating info. */
+	cfb_framebuffer_set_font(disp, 0);
 	if (primary && *primary) {
-		snprintf(text, sizeof(text), "%-3s %s", st, primary);
-	} else {
-		snprintf(text, sizeof(text), "%-3s", st);
+		cfb_print(disp, primary, 48, 0);
 	}
-	cfb_print(disp, text, 48, 0);
 
 	/* Invert the entire yellow strip -> bright background, dark icons + text. */
 	cfb_invert_area(disp, 0, 0, 128, 16);
