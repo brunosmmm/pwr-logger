@@ -398,7 +398,11 @@ static void page_system(const struct device *disp)
 
 	char lu[24], lb[24], lv[24];
 	snprintf(lu, sizeof(lu), "up %u:%02u:%02u", up_s / 3600u, (up_s / 60u) % 60u, up_s % 60u);
-	if (power_usb_present() && mv <= 0) {
+	/* USB takes priority: when on USB the SAADC battery channel reads VDD
+	 * (~3.3 V from the regulator), which is NOT the battery voltage and is
+	 * misleading. Only show "bat <V>" when the device is actually running
+	 * from battery; on USB the source label is the useful information. */
+	if (power_usb_present()) {
 		snprintf(lb, sizeof(lb), "src USB");
 	} else if (mv > 0) {
 		snprintf(lb, sizeof(lb), "bat %d.%02dV", mv / 1000, (mv % 1000) / 10);
