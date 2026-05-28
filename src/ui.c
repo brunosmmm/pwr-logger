@@ -13,6 +13,7 @@
 #include "app_config.h"
 #include "logger.h"
 #include "ble_stream.h"
+#include "display.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -226,7 +227,7 @@ static void render_status_bar(const struct device *disp, const char *primary)
 	char one[2] = { 0, 0 };
 
 	/* --- icon slots -------------------------------------------------- */
-	cfb_framebuffer_set_font(disp, 1);   /* 16x16 icons font */
+	cfb_framebuffer_set_font(disp, display_font_icons());
 
 	if (!usb && pct >= 0) {
 		/* Bucket SoC into the five battery glyphs: <12 = empty,
@@ -256,7 +257,7 @@ static void render_status_bar(const struct device *disp, const char *primary)
 	 * Just the per-page label now (e.g. "LIVE", "ROLL 10s") -- the
 	 * state-abbrev "REC"/"STP"/"OFF" is redundant with the REC-dot /
 	 * link / (no-icon) state slot above and was duplicating info. */
-	cfb_framebuffer_set_font(disp, 0);
+	cfb_framebuffer_set_font(disp, display_font_text());
 	if (primary && *primary) {
 		cfb_print(disp, primary, 48, 0);
 	}

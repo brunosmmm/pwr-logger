@@ -21,11 +21,17 @@ void display_set_powered(bool on);
  * thread shows `msg` plus a 1 s-resolution countdown in place of the normal
  * I/V/P layout. Pass duration_ms=0 to cancel any active notice. */
 void display_notice(const char *msg, uint32_t duration_ms);
+/* CFB font indices located at boot (linker section order isn't stable, so we
+ * look up by the font's pixel size rather than hard-coding 0 / 1). */
+uint8_t display_font_text(void);
+uint8_t display_font_icons(void);
 #else
 static inline void display_init(void) { }
 static inline void display_set_powered(bool on) { (void)on; }
 static inline void display_notice(const char *msg, uint32_t duration_ms)
 { (void)msg; (void)duration_ms; }
+static inline uint8_t display_font_text(void)  { return 0; }
+static inline uint8_t display_font_icons(void) { return 0; }
 #endif
 
 #endif /* DISPLAY_H_ */

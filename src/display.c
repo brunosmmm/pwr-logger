@@ -44,6 +44,17 @@ static void render(void)
  * own init function is re-run via dev->ops.init() on wake. */
 static atomic_t s_powered = ATOMIC_INIT(1);
 
+/* CFB font indices for text + icons -- looked up at display_init() from the
+ * linker-section enumeration order (not source-code order). The text font is
+ * the 10x16 default (cfb_font_1016); the icons font is the 16x16 one we
+ * defined in icons_font.c. Default to (0,0) so a missing icon font just
+ * falls back to text rendering instead of corrupt glyphs. */
+static uint8_t s_font_text;
+static uint8_t s_font_icons;
+
+uint8_t display_font_text(void)  { return s_font_text; }
+uint8_t display_font_icons(void) { return s_font_icons; }
+
 /* Transient overlay shown by the render thread in place of the normal
  * I/V/P layout (e.g. "powering off"). Writers (logctl, system workqueue
  * via controls) and reader (display thread) all touch these fields, so
@@ -209,8 +220,36 @@ void display_init(void)
 	}
 	k_mutex_init(&s_notice_lock);
 	display_blanking_off(disp);
-	cfb_framebuffer_set_font(disp, 0);
-	if (cfb_get_font_size(disp, 0, &fw, &s_fh) != 0 || s_fh == 0) {
+
+	/* Enumerate registered CFB fonts. Pick the 16x16 entry as the icons
+	 * font; the 10x16 entry as the text font (we ship CFB's built-in
+	 * font1016 for that). Use explicit "found" flags so font index 0 is
+	 * a valid result rather than ambiguous with "not selected yet". Log
+	 * everything so a future mismatch is obvious from RTT. */
+	int nfonts = cfb_get_numof_fonts(disp);
+	bool text_found = false, icons_found = false;
+	for (int i = 0; i < nfonts && i < 8; i++) {
+		uint8_t w = 0, h = 0;
+		(void)cfb_get_font_size(disp, i, &w, &h);
+		LOG_INF("cfb font[%d]: %ux%u", i, w, h);
+		if (w == 16 && h == 16 && !icons_found) {
+			s_font_icons = (uint8_t)i;
+			icons_found = true;
+		} else if (w == 10 && h == 16 && !text_found) {
+			s_font_text = (uint8_t)i;
+			text_found = true;
+		}
+	}
+	if (!text_found) {
+		LOG_WRN("cfb: no 10x16 text font found; falling back to index 0");
+	}
+	if (!icons_found) {
+		LOG_WRN("cfb: no 16x16 icons font found; icon slots will render text");
+	}
+	LOG_INF("cfb fonts selected: text=%u icons=%u", s_font_text, s_font_icons);
+
+	cfb_framebuffer_set_font(disp, s_font_text);
+	if (cfb_get_font_size(disp, s_font_text, &fw, &s_fh) != 0 || s_fh == 0) {
 		s_fh = 16;
 	}
 	cfb_framebuffer_clear(disp, true);
