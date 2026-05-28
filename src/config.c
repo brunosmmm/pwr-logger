@@ -48,7 +48,7 @@ static const struct cfg_item items[] = {
 	ITEM("stats_window_s",  T_U16,  stats_window_s,  10),
 	/* UI / multi-page navigation */
 	ITEM("ui_default_page", T_U8,   ui_default_page, 0),
-	ITEM("ui_timeout_s",    T_U16,  ui_timeout_s,    30),
+	ITEM("ui_timeout_s",    T_U16,  ui_timeout_s,    0),    /* off by default; nonzero = seconds */
 	ITEM("ui_cycle_s",      T_U8,   ui_cycle_s,      4),
 	/* Stats / HOLD / energy reset policies on session start */
 	ITEM("stats_reset_on_start",  T_BOOL, stats_reset_on_start,  0),
