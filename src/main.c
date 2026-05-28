@@ -21,6 +21,7 @@
 #include "ui.h"
 #include "storage.h"
 #include "cfgfile.h"
+#include "wdt.h"
 #endif
 
 LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
@@ -74,6 +75,13 @@ int main(void)
 	/* Front-panel inputs + LED (must come AFTER logctl_init -- controls
 	 * posts the boot-time OFFLOAD switch level into logctl's msgq). */
 	controls_init();
+
+	/* Hardware watchdog last: by here every subsystem that uses sysworkq
+	 * (logger flush, display refresh, BLE timers) is up, so the periodic
+	 * feed work joins an already-flowing queue and won't starve at
+	 * startup. Failure here is non-fatal; the device just runs without
+	 * the watchdog safety net. */
+	(void)wdt_init();
 
 	while (1) {
 		k_sleep(K_SECONDS(1));
