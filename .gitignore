@@ -1,4 +1,8 @@
-build/
-twister-out*/
-*.tmp
-.west/
+# Local editor / cache / tooling stragglers
+.claude/
+__pycache__/
+*.pyc
+
+# Verify-loop campaign artifacts (transient, not source of truth)
+VERIFY_LOOP_PROMPT.md
+VERIFY_RESULTS.md
