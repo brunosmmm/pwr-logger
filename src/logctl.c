@@ -34,25 +34,26 @@ int logctl_post(enum logctl_event ev)
 	return k_msgq_put(&evq, &e, K_NO_WAIT);
 }
 
-/* ---- auto-off (dark-idle inactivity -> System OFF) --------------------- */
-static void autooff_fn(struct k_work *work);
-static K_WORK_DELAYABLE_DEFINE(autooff_work, autooff_fn);
-
-static void autooff_arm(void)
-{
-	const struct app_cfg *c = config_get();
-
-	if (c->autooff_en && c->autooff_s > 0) {
-		k_work_schedule(&autooff_work, K_SECONDS(c->autooff_s));
-	}
-}
-static void autooff_cancel(void) { k_work_cancel_delayable(&autooff_work); }
-
-static void autooff_fn(struct k_work *work)
-{
-	ARG_UNUSED(work);
-	logctl_post(EV_AUTOOFF);
-}
+/* ---- auto-off (no longer arms System OFF) ----------------------------- *
+ * Historically this scheduled an EV_AUTOOFF after `autooff_s` of dark idle
+ * which then called to_ship() -> sys_poweroff(). We never want that: System
+ * OFF resets the RTC peripherals and wipes uptime, so the LFXO-backed wall
+ * clock has to re-sync from NVS on every wake -- and System OFF on this
+ * board has no GPIO-SENSE / VBUSDETECT wake configured, so a press on REC
+ * or a USB plug-in is silently ignored until somebody hits the reset pin.
+ *
+ * The agreed design is "System ON deep sleep is the only sleep state."
+ * sys_poweroff() runs ONLY on the explicit user EV_POWEROFF (CLI `pwr
+ * poweroff` / BLE PWR_OP_POWEROFF). Dark-idle stays in System ON forever;
+ * the LFXO keeps RTC1 ticking, USBD_MSG_VBUS_READY wakes us instantly,
+ * and the existing GPIO EDGE_BOTH interrupts on REC/ROTATE post their
+ * events into logctl as soon as the user touches a button.
+ *
+ * Kept as no-ops so existing callers / config keys (`autooff_en`,
+ * `autooff_s`) stay valid; reintroduce a real action here only if we add
+ * a deeper-tier sleep that does NOT call sys_poweroff(). */
+static void autooff_arm(void)   { /* no-op: see header comment */ }
+static void autooff_cancel(void) { /* no-op: see header comment */ }
 
 /* ---- transitions ------------------------------------------------------- */
 static void to_logging(void)
@@ -237,21 +238,20 @@ static void handle(enum logctl_event ev)
 		}
 		break;
 	case EV_AUTOOFF:
-		if (s_state == LS_IDLE) {
-			LOG_INF("idle inactivity -> ship");
-			to_ship();
-		}
+		/* See autooff header comment: never call to_ship() from here.
+		 * Dark idle stays in System ON deep sleep indefinitely. */
 		break;
 	case EV_LOW_BATT:
-		LOG_WRN("low battery");
+		LOG_WRN("low battery (%d mV)", power_batt_mv());
 		if (s_state == LS_LOGGING) {
-			stop_recording();   /* flush + close; samples battery */
+			stop_recording();   /* flush + close so the file is safe */
 		}
-		if (power_batt_mv() >= 0 &&
-		    power_batt_mv() < (int)config_get()->pof_crit_mv) {
-			LOG_WRN("battery critical (%d mV) -> ship", power_batt_mv());
-			to_ship();
-		}
+		/* Do NOT to_ship() even when batt is below pof_crit_mv. The
+		 * hardware POFCON brown-out + RAM-retention reset are the
+		 * physical safety net; calling sys_poweroff() here would also
+		 * reset the LFXO-backed clock and leave nothing for the user
+		 * to press to come back. Stay in dark idle; if VDDH genuinely
+		 * collapses, the chip browns out on its own. */
 		break;
 	}
 }
