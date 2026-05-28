@@ -6,6 +6,7 @@
 #include "stats.h"
 #include "ui.h"
 #include "cfgfile.h"
+#include "logger.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -315,6 +316,18 @@ static int cmd_energy_clear(const struct shell *sh, size_t argc, char **argv)
 	return 0;
 }
 
+static int cmd_marker(const struct shell *sh, size_t argc, char **argv)
+{
+	const char *msg = (argc >= 2) ? argv[1] : "shell";
+	int rc = logger_marker(msg);
+	if (rc) {
+		shell_error(sh, "marker queue full or no session (%d)", rc);
+		return rc;
+	}
+	shell_print(sh, "marker queued: %s", msg);
+	return 0;
+}
+
 /* `pwr ui page N` -- jump to a specific UI page (0..PAGE__COUNT-1).
  * Mostly diagnostic; the operator usually uses ROTATE button (Phase 3). */
 static const char *const page_names[PAGE__COUNT] = {
@@ -395,6 +408,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(pwr_sub,
 	SHELL_CMD(hold,     &hold_sub,   "HOLD show/clear", NULL),
 	SHELL_CMD(energy,   &energy_sub, "energy accumulators", NULL),
 	SHELL_CMD(ui,       &ui_sub,     "UI page select", NULL),
+	SHELL_CMD(marker,   NULL,        "post a TDMS marker: pwr marker [msg]", cmd_marker),
 	SHELL_SUBCMD_SET_END);
 
 SHELL_CMD_REGISTER(pwr, &pwr_sub, "pwr-logger control", NULL);

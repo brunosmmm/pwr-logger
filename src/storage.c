@@ -196,7 +196,12 @@ int storage_session_begin(struct storage_file *f)
 		name_indexed(path, sizeof(path));
 	}
 
-	int rc = fs_open(&f->fp, path, FS_O_CREATE | FS_O_WRITE);
+	/* TRUNC is belt-and-suspenders: the path picker above only returns names
+	 * for which fs_stat said "not present", but a transient fs_stat miss (or a
+	 * follow-up reopen of the same name within the same wall-clock second
+	 * before the previous handle has flushed) would otherwise leave stale
+	 * tail bytes that confuse npTDMS during segment walking. */
+	int rc = fs_open(&f->fp, path, FS_O_CREATE | FS_O_WRITE | FS_O_TRUNC);
 
 	if (rc != 0) {
 		LOG_ERR("fs_open(%s) failed: %d", path, rc);
@@ -247,6 +252,11 @@ int storage_sync(struct storage_file *f)
 		return rc;
 	}
 	return fs_sync(&f->fp);
+}
+
+size_t storage_wbuf_len(void)
+{
+	return wbuf_len;
 }
 
 int storage_session_end(struct storage_file *f)

@@ -2,6 +2,7 @@
 #include "logctl.h"
 #include "display.h"
 #include "ui.h"
+#include "logger.h"
 
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
@@ -131,10 +132,49 @@ static void btn_install(struct btn *b, const struct gpio_dt_spec *spec,
 	gpio_add_callback(spec->port, &b->cb);
 }
 
+/* ---- REC + ROTATE: simultaneous-press marker --------------------------- *
+ * When both buttons are held >= MARKER_HOLD_MS the marker work fires:
+ * cancel both long-press timers, set per-button "consume release" flags so
+ * neither short-press fires on release, post the marker to the logger, and
+ * give visual feedback. The held-state atomics are flipped on every edge. */
+#define MARKER_HOLD_MS 200
+
+static atomic_t s_rec_held;
+static atomic_t s_rotate_held;
+static atomic_t s_rec_consume;     /* release should be swallowed (marker fired) */
+static atomic_t s_rotate_consume;
+
+static void rec_long_fn(struct k_work *w);
+static void rotate_long_fn(struct k_work *w);
+static K_WORK_DELAYABLE_DEFINE(rec_long_work, rec_long_fn);
+static K_WORK_DELAYABLE_DEFINE(rotate_long_work, rotate_long_fn);
+
+static void marker_fn(struct k_work *w)
+{
+	ARG_UNUSED(w);
+	/* Only fire if BOTH are still held; either may have been released
+	 * between the schedule and now. */
+	if (!atomic_get(&s_rec_held) || !atomic_get(&s_rotate_held)) {
+		return;
+	}
+	k_work_cancel_delayable(&rec_long_work);
+	k_work_cancel_delayable(&rotate_long_work);
+	atomic_set(&s_rec_consume, 1);
+	atomic_set(&s_rotate_consume, 1);
+	atomic_set(&s_flash_ticks, ROTATE_FLASH_TICKS);
+	display_notice("marked", 1000);
+	int rc = logger_marker("manual");
+	if (rc) {
+		LOG_WRN("REC+ROTATE -> marker dropped (%d)", rc);
+	} else {
+		LOG_INF("REC+ROTATE -> marker posted");
+	}
+	ui_kick();
+}
+static K_WORK_DELAYABLE_DEFINE(marker_work, marker_fn);
+
 /* ---- REC: short = LOG_TOGGLE, long = ROTATE FILE ----------------------- *
- * Phase 3 remap: long-press REC now rotates the TDMS file (was poweroff).
- * Poweroff lives only on `pwr poweroff` shell + BLE PWR_OP_POWEROFF now --
- * accepted UX trade documented in the plan. */
+ * Phase 3 remap: long-press REC now rotates the TDMS file (was poweroff). */
 static atomic_t s_rec_long_fired;
 
 static void rec_long_fn(struct k_work *w)
@@ -154,16 +194,23 @@ static void rec_long_fn(struct k_work *w)
 	}
 	ui_kick();
 }
-static K_WORK_DELAYABLE_DEFINE(rec_long_work, rec_long_fn);
 
 static void rec_edge(int level)
 {
 	if (level == 1) {           /* pressed (active-low logical level) */
+		atomic_set(&s_rec_held, 1);
 		atomic_set(&s_rec_long_fired, 0);
 		k_work_schedule(&rec_long_work, K_MSEC(REC_LONG_MS));
+		if (atomic_get(&s_rotate_held)) {
+			k_work_schedule(&marker_work, K_MSEC(MARKER_HOLD_MS));
+		}
 	} else {                    /* released */
+		atomic_set(&s_rec_held, 0);
 		k_work_cancel_delayable(&rec_long_work);
-		if (atomic_get(&s_rec_long_fired) == 0) {
+		k_work_cancel_delayable(&marker_work);   /* in case it hadn't fired */
+		if (atomic_get(&s_rec_consume)) {
+			atomic_clear(&s_rec_consume);    /* marker already handled */
+		} else if (atomic_get(&s_rec_long_fired) == 0) {
 			LOG_INF("REC short-press -> toggle log");
 			logctl_post(EV_REC_TOGGLE);
 			ui_kick();
@@ -185,16 +232,23 @@ static void rotate_long_fn(struct k_work *w)
 	display_notice("hold cleared", 1000);
 	ui_kick();
 }
-static K_WORK_DELAYABLE_DEFINE(rotate_long_work, rotate_long_fn);
 
 static void rotate_edge(int level)
 {
 	if (level == 1) {
+		atomic_set(&s_rotate_held, 1);
 		atomic_set(&s_rotate_long_fired, 0);
 		k_work_schedule(&rotate_long_work, K_MSEC(REC_LONG_MS));
+		if (atomic_get(&s_rec_held)) {
+			k_work_schedule(&marker_work, K_MSEC(MARKER_HOLD_MS));
+		}
 	} else {
+		atomic_set(&s_rotate_held, 0);
 		k_work_cancel_delayable(&rotate_long_work);
-		if (atomic_get(&s_rotate_long_fired) == 0) {
+		k_work_cancel_delayable(&marker_work);
+		if (atomic_get(&s_rotate_consume)) {
+			atomic_clear(&s_rotate_consume);
+		} else if (atomic_get(&s_rotate_long_fired) == 0) {
 			LOG_INF("ROTATE short-press -> next page");
 			ui_next_page();
 		}

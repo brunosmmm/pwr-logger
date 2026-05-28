@@ -419,6 +419,7 @@ int tdms_open(struct tdms_writer *w, struct storage_file *f)
 	w->base_tick = 0;
 	w->slow_prev32 = 0;
 	w->slow_hi = 0;
+	w->marker_seq = 0;
 	return 0;
 }
 
@@ -495,13 +496,55 @@ int tdms_write_slow(struct tdms_writer *w, const struct ina228_sample *s, size_t
 	return rc;
 }
 
+/* Append a marker as a TDMS root property `marker_<N>` (UTC ISO timestamp +
+ * the caller-supplied message). Emits a small metadata-only segment per
+ * marker (~110 bytes); the receiving host's TDMS reader (npTDMS, LabVIEW,
+ * DIAdem) merges root properties across segments, so the value shows up on
+ * the file's root group as a normal property. Markers fired on the writer
+ * thread; one per simultaneous REC+ROTATE button press. */
 int tdms_write_event(struct tdms_writer *w, uint64_t tick, const char *msg)
 {
-	ARG_UNUSED(w);
-	ARG_UNUSED(tick);
-	LOG_INF("tdms event: %s", msg ? msg : "");
-	/* TODO: write to /'events'/'marker' (string channel). */
-	return 0;
+	struct buf b = { s_meta, sizeof(s_meta), 0, false };
+	char key[24];
+	char val[48];
+
+	w->marker_seq++;
+	snprintf(key, sizeof(key), "marker_%u", (unsigned)w->marker_seq);
+
+	if (w->have_anchor && w->abs_ok) {
+		uint64_t frac;
+		int64_t sec;
+		char iso[24];
+		ni_abs(w, tick, &frac, &sec);
+		(void)frac;
+		/* sec already includes the 1904 offset; subtract it for Unix. */
+		iso_utc(sec - NI_EPOCH_OFFSET, iso, sizeof(iso));
+		snprintf(val, sizeof(val), "%s %s", iso, msg ? msg : "");
+	} else {
+		snprintf(val, sizeof(val), "tick=%llu %s",
+			 (unsigned long long)tick, msg ? msg : "");
+	}
+
+	b_u32(&b, 1);                /* one object: root */
+	b_str(&b, "/");
+	b_u32(&b, NO_RAW_DATA);
+	b_u32(&b, 1);                /* one property added to root */
+	p_str(&b, key, val);
+
+	if (b.ovf) {
+		LOG_ERR("tdms marker meta overflow");
+		return -ENOMEM;
+	}
+	int rc = emit(w, TOC_META, s_meta, b.len, NULL, 0);
+	if (rc == 0) {
+		/* Marker meta-only segment doesn't disturb the fast/slow object
+		 * set tracking; leave w->last_objset alone so the next fast or
+		 * slow segment reuses its previous metadata correctly. */
+		LOG_INF("tdms marker: %s = %s", key, val);
+	} else {
+		LOG_ERR("tdms marker emit failed: rc=%d", rc);
+	}
+	return rc;
 }
 
 int tdms_close(struct tdms_writer *w)

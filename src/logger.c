@@ -45,6 +45,23 @@ static uint64_t       s_sd_free_b;
 static uint64_t       s_sd_total_b;
 static atomic_t       s_samples_per_sec;
 
+/* Marker pipeline: any thread can call logger_marker(msg); the writer thread
+ * drains marker_q each loop iteration and calls tdms_write_event() for each
+ * pending message. Up to 8 in-flight markers; further calls return -EBUSY
+ * silently rather than blocking the caller. */
+#define MARKER_MAX_LEN  32
+struct marker_item { char msg[MARKER_MAX_LEN]; };
+K_MSGQ_DEFINE(marker_q, sizeof(struct marker_item), 8, 4);
+
+int logger_marker(const char *msg)
+{
+	struct marker_item m = { 0 };
+	if (msg && *msg) {
+		strncpy(m.msg, msg, sizeof(m.msg) - 1);
+	}
+	return k_msgq_put(&marker_q, &m, K_NO_WAIT);
+}
+
 /* Fast-channel (INA240 -> SAADC) code->amps, same scaling as tdms.c. */
 #define FAST_SLOPE_A_PER_CODE ((double)ADC_VFULL_SCALE_V / \
 	((double)(1u << ADC_BITS) * (double)INA240_GAIN * (double)INA240_SHUNT_OHMS))
@@ -128,6 +145,17 @@ static void writer_fn(void *a, void *b, void *c)
 			storage_sync(&s_file);
 			slow_n = 0;
 			t_flush = now;
+		}
+
+		/* Drain any pending marker requests. Cheap: a single small
+		 * meta-only segment per marker (~110 B). */
+		if (s_session) {
+			struct marker_item m;
+			while (k_msgq_get(&marker_q, &m, K_NO_WAIT) == 0) {
+				(void)tdms_write_event(&s_tdms,
+					timebase_extend(timebase_now32()),
+					m.msg);
+			}
 		}
 
 		if (now - t_report >= 1000) {

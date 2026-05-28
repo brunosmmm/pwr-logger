@@ -30,6 +30,8 @@ struct tdms_writer {
 	uint64_t base_tick;        /* 64-bit master tick at session start          */
 	uint32_t slow_prev32;      /* slow 32-bit tick extender state              */
 	uint64_t slow_hi;
+
+	uint32_t marker_seq;       /* 1, 2, 3, ... -- key suffix for "marker_N" props */
 };
 
 int tdms_open(struct tdms_writer *w, struct storage_file *f);

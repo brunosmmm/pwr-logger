@@ -21,4 +21,11 @@ int logger_rotate(void); /* close current file + open a fresh one, mid-stream */
 void     logger_sd_usage(uint64_t *file_b, uint64_t *free_b, uint64_t *total_b);
 uint32_t logger_samples_per_sec(void);
 
+/* Post a marker request. The writer thread will append a TDMS root property
+ * (marker_<N> = "<UTC>  <msg>") at the next loop iteration so it shows up
+ * in the file alongside the data. Safe to call from any thread; non-
+ * blocking; silently dropped if the marker queue is full (>=8 pending).
+ * Returns 0 on enqueue, -EBUSY if dropped. */
+int logger_marker(const char *msg);
+
 #endif /* LOGGER_H_ */

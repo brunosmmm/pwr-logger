@@ -44,4 +44,8 @@ int storage_statvfs(uint64_t *free_b, uint64_t *total_b);
 /* Size of an arbitrary file in bytes via fs_stat. Returns 0 / -errno. */
 int storage_file_size(const char *path, uint64_t *size_b);
 
+/* DIAG: current write-combine buffer fill level. Lets the marker write path
+ * confirm "did storage_write actually append my bytes?" without a host trip. */
+size_t storage_wbuf_len(void);
+
 #endif /* STORAGE_H_ */
