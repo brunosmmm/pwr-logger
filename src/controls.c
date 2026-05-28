@@ -182,7 +182,13 @@ static void rec_long_fn(struct k_work *w)
 	ARG_UNUSED(w);
 	atomic_set(&s_rec_long_fired, 1);
 	enum logctl_state st = logctl_state();
-	if (st == LS_LOGGING) {
+	if (st == LS_IDLE) {
+		/* Long-hold in dark sleep is also a wake gesture (matches
+		 * ROTATE long-hold). Skips the s_rec_long_fired-suppressed
+		 * short-press wake that would otherwise fire on release. */
+		LOG_INF("REC long-press in IDLE -> wake");
+		logctl_post(EV_WAKE);
+	} else if (st == LS_LOGGING) {
 		LOG_INF("REC long-press -> rotate file");
 		atomic_set(&s_flash_ticks, ROTATE_FLASH_TICKS);
 		display_notice("rotated", ROTATE_NOTICE_MS);
@@ -227,6 +233,15 @@ static void rotate_long_fn(struct k_work *w)
 {
 	ARG_UNUSED(w);
 	atomic_set(&s_rotate_long_fired, 1);
+	if (logctl_state() == LS_IDLE) {
+		/* Rail's off + display dark: long-press in IDLE is a wake
+		 * gesture, not a hold-clear. The release-path handler also
+		 * wakes; mirror it here so the user gets feedback at hold-
+		 * threshold without waiting for release. */
+		LOG_INF("ROTATE long-press in IDLE -> wake");
+		logctl_post(EV_WAKE);
+		return;
+	}
 	LOG_INF("ROTATE long-press -> clear HOLD on current page");
 	ui_hold_clear_current();
 	display_notice("hold cleared", 1000);
@@ -249,8 +264,18 @@ static void rotate_edge(int level)
 		if (atomic_get(&s_rotate_consume)) {
 			atomic_clear(&s_rotate_consume);
 		} else if (atomic_get(&s_rotate_long_fired) == 0) {
-			LOG_INF("ROTATE short-press -> next page");
-			ui_next_page();
+			if (logctl_state() == LS_IDLE) {
+				/* ui_next_page on a blank screen does nothing
+				 * the user can see. Treat the press as a wake
+				 * gesture instead -- relights everything and
+				 * lands us in STOPPED; the next press cycles
+				 * pages normally. */
+				LOG_INF("ROTATE short-press in IDLE -> wake");
+				logctl_post(EV_WAKE);
+			} else {
+				LOG_INF("ROTATE short-press -> next page");
+				ui_next_page();
+			}
 		}
 	}
 }

@@ -61,8 +61,12 @@ static void to_logging(void)
 	if (s_state == LS_LOGGING) {
 		return;
 	}
+	enum logctl_state prev = s_state;
 	autooff_cancel();
 	power_rail(true);                /* may be coming from dark idle */
+	if (prev == LS_IDLE) {
+		display_set_powered(true);   /* SSD1306 lost its config when rail cycled */
+	}
 	ble_stream_set_adv(true);
 	logger_start();                  /* (re)mount + fresh session + acq */
 	s_state = LS_LOGGING;
@@ -158,8 +162,12 @@ static void to_offload(void)
 	if (s_state == LS_OFFLOAD) {
 		return;
 	}
+	enum logctl_state prev = s_state;
 	autooff_cancel();
 	power_rail(true);                /* SD needs the rail (may be idle) */
+	if (prev == LS_IDLE) {
+		display_set_powered(true);   /* SSD1306 lost its config when rail cycled */
+	}
 	if (s_state == LS_LOGGING) {
 		logger_stop();
 	}
@@ -189,6 +197,14 @@ static void handle(enum logctl_event ev)
 	switch (ev) {
 	case EV_REC_TOGGLE:
 		cancel_pending_idle();
+		if (s_state == LS_IDLE) {
+			/* Wake from sleep on any button press. Stay in STOPPED;
+			 * a second REC press is needed to actually start a
+			 * session. Avoids "press, see the screen come up mid-
+			 * record, didn't mean to start" surprise. */
+			wake_idle();
+			break;
+		}
 		if (s_state == LS_OFFLOAD) {
 			/* OFFLOAD is a maintained-switch state; a momentary
 			 * button must not override it (and starting LOGGING
@@ -199,6 +215,12 @@ static void handle(enum logctl_event ev)
 			break;
 		}
 		(s_state == LS_LOGGING) ? stop_recording() : to_logging();
+		break;
+	case EV_WAKE:
+		cancel_pending_idle();
+		if (s_state == LS_IDLE) {
+			wake_idle();
+		}
 		break;
 	case EV_LOG_START:
 		cancel_pending_idle();
@@ -243,15 +265,25 @@ static void handle(enum logctl_event ev)
 		break;
 	case EV_LOW_BATT:
 		LOG_WRN("low battery (%d mV)", power_batt_mv());
-		if (s_state == LS_LOGGING) {
-			stop_recording();   /* flush + close so the file is safe */
-		}
-		/* Do NOT to_ship() even when batt is below pof_crit_mv. The
-		 * hardware POFCON brown-out + RAM-retention reset are the
-		 * physical safety net; calling sys_poweroff() here would also
-		 * reset the LFXO-backed clock and leave nothing for the user
-		 * to press to come back. Stay in dark idle; if VDDH genuinely
-		 * collapses, the chip browns out on its own. */
+		/* Do NOT stop the recording or change mode. Two reasons:
+		 *
+		 * 1. POFWARN-VDDH trips on transient dips too -- in particular
+		 *    on every USB-to-battery handoff -- and the previous
+		 *    "stop_recording() + enter_idle()" reaction cut the rail
+		 *    and blanked the display whenever the user unplugged USB
+		 *    while logging. That's exactly the regression the user is
+		 *    seeing: logs stop, screen goes dark, no warning.
+		 *
+		 * 2. POFWARN is a "you have a few seconds of hold-up left"
+		 *    notice, not "you're about to brown out right now." We
+		 *    storage_sync()'d at every slow boundary, so the latest
+		 *    full sector is on the card; if the chip actually browns
+		 *    out we lose at most the sub-sector tail. Letting the
+		 *    user keep recording until VDD genuinely collapses is the
+		 *    better trade than killing the session at the first dip.
+		 *
+		 * The hardware POR + RAM retention is the safety net. The
+		 * user can also explicitly stop with REC short / `pwr stop`. */
 		break;
 	}
 }

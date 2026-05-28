@@ -28,6 +28,7 @@ enum logctl_event {
 	EV_USB_OFF,        /* VBUS removed                                          */
 	EV_LOW_BATT,       /* POFCON trip: flush + safe                             */
 	EV_AUTOOFF,        /* idle inactivity expired                              */
+	EV_WAKE,           /* any button press while LS_IDLE -> relight + STOPPED  */
 };
 
 void logctl_init(void);                  /* seed initial mode (after config_load) */
