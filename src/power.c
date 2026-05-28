@@ -74,19 +74,32 @@ int power_batt_mv(void)
 	return s_batt_mv;
 }
 
-/* Single-cell Li-Po state-of-charge from open-circuit voltage. Piecewise
- * linear over a 12-point datasheet-typical discharge curve (the LiPo
- * "knee" around 3.7 V means a straight 3.0/4.2 linear would over-read
- * 15-20 % in the mid-band). Returns 0..100, or -1 if the reading is
- * unknown. Note: under heavy load the cell sags ~50-100 mV; this reads
- * the loaded voltage so it under-reports SoC during a transient draw.
- * Good enough for a "% remaining" indicator; not a fuel-gauge. */
+/* Single-cell Li-ion state-of-charge from terminal voltage. Piecewise
+ * linear over the canonical 5-point OCV table reproduced across most
+ * generic Li-ion references (ufinebattery.com, jackery.com, etc.):
+ *
+ *   100 % = 4.20 V    75 % = 3.90 V    50 % = 3.70 V
+ *    25 % = 3.50 V     0 % = 3.00 V
+ *
+ * Honest about what this is and isn't:
+ *
+ *   - Battery University BU-903 calls voltage-only SoC "impracticable"
+ *     for Li-ion: 80 % of the cell's energy lives in the flat plateau
+ *     around 3.7 V where voltage barely changes with charge. We can
+ *     reliably tell "near full" (>4.0 V) and "near empty" (<3.4 V); the
+ *     middle reads are accurate to roughly +/- 10-15 % SoC.
+ *   - Reads terminal voltage, not open-circuit. Under load the cell
+ *     sags ~50-100 mV so SoC under-reports during current bursts.
+ *   - Generic curve; not measured against the specific cell. Cell
+ *     aging shifts it further.
+ *
+ * Good enough for a "is the battery roughly full / half / dead?"
+ * indicator. For real fuel-gauging use coulomb counting + an OCV
+ * re-anchor, or a dedicated IC (MAX17048 / BQ27441). */
 int power_batt_pct(void)
 {
 	static const struct { int mv; uint8_t pct; } curve[] = {
-		{ 4200, 100 }, { 4100,  90 }, { 4000,  75 }, { 3900,  60 },
-		{ 3800,  45 }, { 3700,  30 }, { 3600,  20 }, { 3500,  10 },
-		{ 3400,   5 }, { 3300,   2 }, { 3000,   0 },
+		{ 4200, 100 }, { 3900, 75 }, { 3700, 50 }, { 3500, 25 }, { 3000, 0 },
 	};
 	int mv = s_batt_mv;
 
