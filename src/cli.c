@@ -493,9 +493,36 @@ static int cmd_ls(const struct shell *sh, size_t argc, char **argv)
 	return 0;
 }
 
-/* BSS to keep cmd_download's stack footprint small. */
-static uint8_t dl_buf[DL_CHUNK];
+/* Two ping-pong SD buffers + system-workqueue read worker so the SD-read
+ * path (which serializes inside FatFs + the SDHC SPI driver) overlaps
+ * with USB shipping. While the shell thread is in pwr_bulk_send draining
+ * buffer A to the bulk-IN endpoint, the workqueue runs fs_read into
+ * buffer B; on the next iteration they swap. fp is touched by exactly
+ * one thread at a time so no extra synchronization on the file handle.
+ *
+ * BSS: 2 x DL_CHUNK = 16 KB.
+ */
+static uint8_t dl_buf[2][DL_CHUNK];
 static char    dl_path[80];
+
+struct dl_read_req {
+	struct k_work     work;
+	struct fs_file_t *fp;
+	uint8_t          *buf;
+	size_t            to_read;
+	ssize_t           result;
+	struct k_sem      done;
+};
+
+static struct dl_read_req dl_req;
+
+static void dl_read_worker(struct k_work *w)
+{
+	struct dl_read_req *r = CONTAINER_OF(w, struct dl_read_req, work);
+
+	r->result = fs_read(r->fp, r->buf, r->to_read);
+	k_sem_give(&r->done);
+}
 
 static int cmd_download(const struct shell *sh, size_t argc, char **argv)
 {
@@ -538,18 +565,51 @@ static int cmd_download(const struct shell *sh, size_t argc, char **argv)
 	dl_write(magic, 4);
 	dl_write_u32_le((uint32_t)ent.size);
 
+	k_work_init(&dl_req.work, dl_read_worker);
+	k_sem_init(&dl_req.done, 0, 1);
+	dl_req.fp = &fp;
+
 	uint32_t crc = 0;
-	uint32_t sent = 0;
+	size_t remaining = ent.size;
+	int cur = 0;
 
-	while (sent < ent.size) {
-		ssize_t n = fs_read(&fp, dl_buf, sizeof(dl_buf));
+	/* Prime buffer 0 synchronously so we have data to ship on the
+	 * first iteration. From here on the worker fills the other buffer
+	 * concurrently with pwr_bulk_send draining this one. */
+	ssize_t n = 0;
 
-		if (n <= 0) {
+	if (remaining > 0) {
+		n = fs_read(&fp, dl_buf[cur],
+			    MIN((size_t)DL_CHUNK, remaining));
+		if (n > 0) {
+			remaining -= (size_t)n;
+		}
+	}
+
+	while (n > 0) {
+		bool prefetch = (remaining > 0);
+
+		if (prefetch) {
+			dl_req.buf     = dl_buf[1 - cur];
+			dl_req.to_read = MIN((size_t)DL_CHUNK, remaining);
+			dl_req.result  = 0;
+			k_sem_reset(&dl_req.done);
+			k_work_submit(&dl_req.work);
+		}
+
+		dl_write(dl_buf[cur], (size_t)n);
+		crc = crc32_ieee_update(crc, dl_buf[cur], (size_t)n);
+
+		if (!prefetch) {
 			break;
 		}
-		dl_write(dl_buf, (size_t)n);
-		crc = crc32_ieee_update(crc, dl_buf, (size_t)n);
-		sent += (uint32_t)n;
+
+		(void)k_sem_take(&dl_req.done, K_FOREVER);
+		n = dl_req.result;
+		if (n > 0) {
+			remaining -= (size_t)n;
+		}
+		cur ^= 1;
 	}
 	(void)fs_close(&fp);
 
