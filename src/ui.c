@@ -277,8 +277,11 @@ static void render_status_bar(const struct device *disp, const char *primary)
 		cfb_print(disp, one, 0, 0);
 	}
 
-	/* Slot 1: REC dot when logging (own slot so it's visible on USB too). */
-	if (lst == LS_LOGGING) {
+	/* Slot 1: REC dot when logging (own slot so it's visible on USB too).
+	 * Blink at 1 Hz (500 ms on / 500 ms off) so the operator reads it as
+	 * "live recording" even without color. The render loop ticks every
+	 * 500 ms so each on/off phase covers one frame. */
+	if (lst == LS_LOGGING && ((k_uptime_get_32() / 500U) & 1U) == 0U) {
 		one[0] = '\x47';
 		cfb_print(disp, one, 16, 0);
 	}
