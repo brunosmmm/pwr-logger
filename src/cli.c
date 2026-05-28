@@ -16,6 +16,11 @@
 #include <time.h>
 #include <zephyr/kernel.h>
 #include <zephyr/shell/shell.h>
+#include <zephyr/device.h>
+#include <zephyr/drivers/uart.h>
+#include <zephyr/fs/fs.h>
+#include <zephyr/sys/crc.h>
+#include "storage.h"
 
 /*
  * Console front-end (Zephyr shell over the CDC-ACM USB console). Commands are
@@ -376,6 +381,170 @@ static int cmd_ui_icons(const struct shell *sh, size_t argc, char **argv)
 	return 0;
 }
 
+/* ---- automated-test offload: 'pwr ls' + 'pwr download <name>' ------------
+ *
+ * Streams a TDMS session file back over the CDC console as a self-framed
+ * binary blob, so a host CI script never has to do the MSC mount / copy /
+ * unmount dance to retrieve data.
+ *
+ *   header = 'P' 'W' 'R' 0x01   (4 magic bytes)
+ *            <size:u32 LE>
+ *   body   = <size> raw bytes
+ *   footer = <crc32_ieee:u32 LE>
+ *
+ * Host: scan stdin for the magic, read 4-byte size, read body, read CRC,
+ * verify. See tools/pwrdl.py. CRC is the standard zlib CRC-32 (poly
+ * 0xEDB88320, init/xorout 0xFFFFFFFF) so any language with a stdlib CRC
+ * implementation can verify trivially.
+ *
+ * The transfer is raw uart_poll_out so it bypasses the shell's text-mode
+ * formatting; the shell prompt that re-appears after the command finishes
+ * is just trailing noise the host can ignore. */
+
+#define DL_CHUNK 256
+
+static const struct device *console_dev = DEVICE_DT_GET(DT_CHOSEN(zephyr_console));
+
+/* Bulk write to the CDC console via uart_poll_out, but with k_yield()
+ * between chunks so the CDC class's TX worker can drain the ring buffer
+ * into USB transactions of useful size. Without the yield, the shell
+ * thread monopolises the CPU and the CDC worker only runs when the ring
+ * buffer is full -- which means most bytes ship in many small USB
+ * transactions and we cap at ~5 KB/s. Yielding every 64 bytes lets the
+ * worker batch into ~64-byte USB transfers (one bulk EP packet) and
+ * brings the throughput close to the FS bulk-EP ceiling. */
+#define DL_YIELD_EVERY 64
+
+static void dl_write(const uint8_t *data, size_t len)
+{
+	for (size_t i = 0; i < len; i++) {
+		uart_poll_out(console_dev, data[i]);
+		if ((i & (DL_YIELD_EVERY - 1)) == (DL_YIELD_EVERY - 1)) {
+			k_yield();
+		}
+	}
+}
+
+static void dl_write_u32_le(uint32_t v)
+{
+	uint8_t b[4] = {
+		(uint8_t)v, (uint8_t)(v >> 8),
+		(uint8_t)(v >> 16), (uint8_t)(v >> 24),
+	};
+
+	dl_write(b, 4);
+}
+
+static int cmd_ls(const struct shell *sh, size_t argc, char **argv)
+{
+	ARG_UNUSED(argc); ARG_UNUSED(argv);
+
+	bool we_mounted = (storage_mount() == 0);
+
+	struct fs_dir_t dir;
+	fs_dir_t_init(&dir);
+	int rc = fs_opendir(&dir, "/SD:");
+
+	if (rc != 0) {
+		shell_error(sh, "opendir(/SD:) failed: %d", rc);
+		if (we_mounted) {
+			(void)storage_unmount();
+		}
+		return -1;
+	}
+
+	struct fs_dirent ent;
+	int count = 0;
+	uint64_t total = 0;
+
+	while (fs_readdir(&dir, &ent) == 0 && ent.name[0] != '\0') {
+		if (ent.type == FS_DIR_ENTRY_FILE) {
+			shell_print(sh, "%-32s %u", ent.name, (unsigned)ent.size);
+			count++;
+			total += ent.size;
+		}
+	}
+	(void)fs_closedir(&dir);
+	shell_print(sh, "(%d files, %llu bytes)", count, (unsigned long long)total);
+
+	if (we_mounted) {
+		(void)storage_unmount();
+	}
+	return 0;
+}
+
+/* BSS to keep cmd_download's stack footprint small -- the shell_uart
+ * thread runs with a 4 KB stack now (see prj.conf) but the FatFs read
+ * path plus a 256 B chunk buf would still be tight; safer to keep them
+ * here. Serialised by the shell single-execution model. */
+static uint8_t dl_buf[DL_CHUNK];
+static char    dl_path[80];
+
+static int cmd_download(const struct shell *sh, size_t argc, char **argv)
+{
+	if (argc < 2) {
+		shell_error(sh, "usage: pwr download <filename>");
+		shell_print(sh,  "       (use 'pwr ls' for the list)");
+		return -1;
+	}
+
+	bool we_mounted = (storage_mount() == 0);
+
+	snprintf(dl_path, sizeof(dl_path), "/SD:/%s", argv[1]);
+
+	struct fs_dirent ent;
+	int rc = fs_stat(dl_path, &ent);
+
+	if (rc != 0 || ent.type != FS_DIR_ENTRY_FILE) {
+		shell_error(sh, "no such file: %s (rc=%d)", dl_path, rc);
+		if (we_mounted) {
+			(void)storage_unmount();
+		}
+		return -1;
+	}
+
+	struct fs_file_t fp;
+
+	fs_file_t_init(&fp);
+	rc = fs_open(&fp, dl_path, FS_O_READ);
+	if (rc != 0) {
+		shell_error(sh, "open failed: %d", rc);
+		if (we_mounted) {
+			(void)storage_unmount();
+		}
+		return -1;
+	}
+
+	/* Header: magic + LE size. */
+	const uint8_t magic[4] = { 'P', 'W', 'R', 0x01 };
+
+	dl_write(magic, 4);
+	dl_write_u32_le((uint32_t)ent.size);
+
+	uint32_t crc = 0;
+	uint32_t sent = 0;
+
+	while (sent < ent.size) {
+		ssize_t n = fs_read(&fp, dl_buf, sizeof(dl_buf));
+
+		if (n <= 0) {
+			break;
+		}
+		dl_write(dl_buf, (size_t)n);
+		crc = crc32_ieee_update(crc, dl_buf, (size_t)n);
+		sent += (uint32_t)n;
+	}
+	(void)fs_close(&fp);
+
+	/* Footer: CRC32 LE. */
+	dl_write_u32_le(crc);
+
+	if (we_mounted) {
+		(void)storage_unmount();
+	}
+	return 0;
+}
+
 static int cmd_led_diag(const struct shell *sh, size_t argc, char **argv)
 {
 	if (argc < 2) {
@@ -450,6 +619,9 @@ SHELL_STATIC_SUBCMD_SET_CREATE(pwr_sub,
 	SHELL_CMD(ui,       &ui_sub,     "UI page select", NULL),
 	SHELL_CMD(marker,   NULL,        "post a TDMS marker: pwr marker [msg]", cmd_marker),
 	SHELL_CMD(led,      NULL,        "led <0|1|z|auto>: diag-drive the status LED", cmd_led_diag),
+	SHELL_CMD(ls,       NULL,        "list session files on SD",                cmd_ls),
+	SHELL_CMD(download, NULL,        "stream <file> back as binary (PWR\\x01 + size + bytes + crc32-LE)",
+		  cmd_download),
 	SHELL_SUBCMD_SET_END);
 
 SHELL_CMD_REGISTER(pwr, &pwr_sub, "pwr-logger control", NULL);
