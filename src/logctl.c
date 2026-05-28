@@ -38,7 +38,7 @@ int logctl_post(enum logctl_event ev)
  * Repurposed from the original "dark-idle -> System OFF" behavior (commit
  * b5787a4) which we excised because System OFF resets the LFXO-backed clock
  * and has no configured wake source. Now the timer just transitions
- * LS_STOPPED -> LS_IDLE via the normal enter_idle() path (3 s 'powering off'
+ * LS_STOPPED -> LS_IDLE via the normal enter_idle() path (3 s 'sleeping'
  * banner -> rail off -> stays in System ON with the RTC ticking + button +
  * USB wake sources intact). The user-facing config keys stay the same
  * (autooff_en, autooff_s); only the destination changes.
@@ -127,7 +127,7 @@ static void idle_finalize_fn(struct k_work *w)
 static void enter_idle(void)        /* battery, not recording: go dark */
 {
 	if (IDLE_WARN_MS > 0) {
-		display_notice("powering off", IDLE_WARN_MS);
+		display_notice("sleeping", IDLE_WARN_MS);
 		LOG_INF("-> IDLE in %d ms", IDLE_WARN_MS);
 		k_work_schedule(&idle_finalize_work, K_MSEC(IDLE_WARN_MS));
 	} else {
