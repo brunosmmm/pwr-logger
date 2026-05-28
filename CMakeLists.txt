@@ -27,6 +27,7 @@ target_sources(app PRIVATE
     src/stats.c
     src/cfgfile.c
     src/wdt.c
+    src/ota.c
 )
 
 # Optional SSD1306 OLED (CONFIG_APP_DISPLAY) — compiled only when enabled.

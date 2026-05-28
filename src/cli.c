@@ -8,6 +8,7 @@
 #include "cfgfile.h"
 #include "logger.h"
 #include "controls.h"
+#include "ota.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -20,6 +21,7 @@
 #include <zephyr/drivers/uart.h>
 #include <zephyr/fs/fs.h>
 #include <zephyr/sys/crc.h>
+#include <zephyr/dfu/mcuboot.h>
 #include "storage.h"
 #include "usbd_pwr_bulk.h"
 
@@ -677,6 +679,67 @@ SHELL_STATIC_SUBCMD_SET_CREATE(energy_sub,
 	SHELL_CMD(clear, NULL, "reset accumulators",   cmd_energy_clear),
 	SHELL_SUBCMD_SET_END);
 
+static const char *ota_swap_str(int t)
+{
+	switch (t) {
+	case BOOT_SWAP_TYPE_NONE:    return "none";
+	case BOOT_SWAP_TYPE_TEST:    return "test (will swap, revert if not confirmed)";
+	case BOOT_SWAP_TYPE_PERM:    return "permanent (will swap, stick)";
+	case BOOT_SWAP_TYPE_REVERT:  return "revert (rolling back unconfirmed image)";
+	case BOOT_SWAP_TYPE_FAIL:    return "fail";
+	default:                     return "unknown";
+	}
+}
+
+static int cmd_ota_status(const struct shell *sh, size_t argc, char **argv)
+{
+	ARG_UNUSED(argc); ARG_UNUSED(argv);
+	shell_print(sh, "current image:  %s",
+		    ota_test_pending() ? "UNCONFIRMED (will revert on next reset)" :
+					 "confirmed");
+	shell_print(sh, "pending swap:   %s", ota_swap_str(ota_pending_swap_type()));
+	shell_print(sh, "update file:    %s", OTA_FILE_PATH);
+	return 0;
+}
+
+static void ota_progress_print(const char *stage, int rc, void *user)
+{
+	const struct shell *sh = user;
+
+	if (rc == 0) {
+		shell_print(sh, "ota: %s ok", stage);
+	} else {
+		shell_print(sh, "ota: %s err=%d", stage, rc);
+	}
+}
+
+static int cmd_ota_apply(const struct shell *sh, size_t argc, char **argv)
+{
+	ARG_UNUSED(argc); ARG_UNUSED(argv);
+	shell_print(sh, "ota: streaming %s to slot1; device will reboot on success",
+		    OTA_FILE_PATH);
+	int rc = ota_apply_from_sd(ota_progress_print, (void *)sh);
+
+	/* On success ota_apply_from_sd reboots; we only reach here on failure. */
+	shell_error(sh, "ota: failed (%d)", rc);
+	return rc;
+}
+
+static int cmd_ota_confirm(const struct shell *sh, size_t argc, char **argv)
+{
+	ARG_UNUSED(argc); ARG_UNUSED(argv);
+	ota_confirm_current();
+	shell_print(sh, "ota: current image confirmed");
+	return 0;
+}
+
+SHELL_STATIC_SUBCMD_SET_CREATE(ota_sub,
+	SHELL_CMD(status,  NULL, "show OTA / pending-swap state", cmd_ota_status),
+	SHELL_CMD(apply,   NULL, "stream /SD:/firmware.bin to slot1, mark TEST, reboot",
+		  cmd_ota_apply),
+	SHELL_CMD(confirm, NULL, "confirm current image (sticky)", cmd_ota_confirm),
+	SHELL_SUBCMD_SET_END);
+
 SHELL_STATIC_SUBCMD_SET_CREATE(ui_sub,
 	SHELL_CMD(page,  NULL, "page [N]: show or set page", cmd_ui_page),
 	SHELL_CMD(next,  NULL, "advance to next page",       cmd_ui_next),
@@ -706,6 +769,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(pwr_sub,
 	SHELL_CMD(ls,       NULL,        "list session files on SD",                cmd_ls),
 	SHELL_CMD(download, NULL,        "stream <file> back as binary (PWR\\x01 + size + bytes + crc32-LE)",
 		  cmd_download),
+	SHELL_CMD(ota,      &ota_sub,    "OTA: SD-card update + confirm",  NULL),
 	SHELL_SUBCMD_SET_END);
 
 SHELL_CMD_REGISTER(pwr, &pwr_sub, "pwr-logger control", NULL);

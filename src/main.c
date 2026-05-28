@@ -22,6 +22,7 @@
 #include "storage.h"
 #include "cfgfile.h"
 #include "wdt.h"
+#include "ota.h"
 #endif
 
 LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
@@ -82,6 +83,13 @@ int main(void)
 	 * startup. Failure here is non-fatal; the device just runs without
 	 * the watchdog safety net. */
 	(void)wdt_init();
+
+	/* If we just swapped in via OTA (TEST swap), confirm the image so
+	 * MCUboot stops reverting on subsequent resets. "We got this far"
+	 * means init succeeded across acquisition, INA228, BLE, USB,
+	 * display, controls, logctl -- a reasonable health check. No-op
+	 * if the image was already confirmed. */
+	ota_confirm_current();
 
 	while (1) {
 		k_sleep(K_SECONDS(1));

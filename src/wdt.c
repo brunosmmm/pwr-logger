@@ -56,6 +56,13 @@ static void wdt_feed_work(struct k_work *w)
 	k_work_schedule(&wdt_dwork, K_MSEC(WDT_FEED_MS));
 }
 
+void wdt_feed_now(void)
+{
+	if (wdt_channel >= 0) {
+		(void)wdt_feed(wdt_dev, wdt_channel);
+	}
+}
+
 int wdt_init(void)
 {
 	if (!device_is_ready(wdt_dev)) {
