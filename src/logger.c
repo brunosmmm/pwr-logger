@@ -11,6 +11,8 @@
 #include "config.h"
 #include "stats.h"
 
+#include <zephyr/fs/fs.h>
+
 #include <math.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
@@ -30,6 +32,18 @@ static struct tdms_writer  s_tdms;
 static volatile bool s_running;
 static volatile bool s_rotate; /* writer cuts a fresh file at the next boundary */
 static bool s_session; /* true = recording to SD; false = monitor-only */
+
+/* SD-usage cache + samples-per-second snapshot. Written only by the writer
+ * thread (which also holds the FatFs lock for its own fs_write calls), so no
+ * concurrency hazard with the rest of the file system. Read by the UI thread
+ * via logger_sd_usage() / logger_samples_per_sec() under a small mutex. The
+ * 64-bit fields can't be atomic on Cortex-M4 in plain C; the rate is a u32
+ * and uses a relaxed atomic_t. */
+static struct k_mutex s_sd_lock;
+static uint64_t       s_sd_file_b;
+static uint64_t       s_sd_free_b;
+static uint64_t       s_sd_total_b;
+static atomic_t       s_samples_per_sec;
 
 /* Fast-channel (INA240 -> SAADC) code->amps, same scaling as tdms.c. */
 #define FAST_SLOPE_A_PER_CODE ((double)ADC_VFULL_SCALE_V / \
@@ -123,6 +137,30 @@ static void writer_fn(void *a, void *b, void *c)
 			LOG_INF("acq: %llu samples/s, %u drops [%s]  fast_I=%d uA (code %d)  ble: wins=%u nerr=%u",
 				samples, acq_drops(), s_session ? "logging" : "monitor",
 				fast_ua, (int)fast_avg, wins, nerr);
+
+			/* Publish the per-second snapshots while we're already at a
+			 * 1 s boundary (and holding the FatFs lock via fs_* calls in
+			 * the same thread -- statvfs/stat are safe here). */
+			atomic_set(&s_samples_per_sec, (atomic_val_t)samples);
+			if (s_session) {
+				struct fs_statvfs st;
+				struct fs_dirent ent;
+				uint64_t file_b = 0, free_b = 0, total_b = 0;
+				if (fs_statvfs("/SD:", &st) == 0) {
+					free_b  = (uint64_t)st.f_bfree  * (uint64_t)st.f_frsize;
+					total_b = (uint64_t)st.f_blocks * (uint64_t)st.f_frsize;
+				}
+				const char *path = storage_session_path();
+				if (path && *path && fs_stat(path, &ent) == 0) {
+					file_b = (uint64_t)ent.size;
+				}
+				k_mutex_lock(&s_sd_lock, K_FOREVER);
+				s_sd_file_b = file_b;
+				s_sd_free_b = free_b;
+				s_sd_total_b = total_b;
+				k_mutex_unlock(&s_sd_lock);
+			}
+
 			samples = 0;
 			wins = 0;
 			nerr = 0;
@@ -171,7 +209,22 @@ static void writer_fn(void *a, void *b, void *c)
 int logger_init(void)
 {
 	agg_reset();
+	k_mutex_init(&s_sd_lock);
 	return 0;
+}
+
+void logger_sd_usage(uint64_t *file_b, uint64_t *free_b, uint64_t *total_b)
+{
+	k_mutex_lock(&s_sd_lock, K_FOREVER);
+	if (file_b)  *file_b  = s_sd_file_b;
+	if (free_b)  *free_b  = s_sd_free_b;
+	if (total_b) *total_b = s_sd_total_b;
+	k_mutex_unlock(&s_sd_lock);
+}
+
+uint32_t logger_samples_per_sec(void)
+{
+	return (uint32_t)atomic_get(&s_samples_per_sec);
 }
 
 int logger_start(void)
