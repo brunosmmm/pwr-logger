@@ -74,6 +74,42 @@ int power_batt_mv(void)
 	return s_batt_mv;
 }
 
+/* Single-cell Li-Po state-of-charge from open-circuit voltage. Piecewise
+ * linear over a 12-point datasheet-typical discharge curve (the LiPo
+ * "knee" around 3.7 V means a straight 3.0/4.2 linear would over-read
+ * 15-20 % in the mid-band). Returns 0..100, or -1 if the reading is
+ * unknown. Note: under heavy load the cell sags ~50-100 mV; this reads
+ * the loaded voltage so it under-reports SoC during a transient draw.
+ * Good enough for a "% remaining" indicator; not a fuel-gauge. */
+int power_batt_pct(void)
+{
+	static const struct { int mv; uint8_t pct; } curve[] = {
+		{ 4200, 100 }, { 4100,  90 }, { 4000,  75 }, { 3900,  60 },
+		{ 3800,  45 }, { 3700,  30 }, { 3600,  20 }, { 3500,  10 },
+		{ 3400,   5 }, { 3300,   2 }, { 3000,   0 },
+	};
+	int mv = s_batt_mv;
+
+	if (mv < 0) {
+		return -1;
+	}
+	if (mv >= curve[0].mv) {
+		return 100;
+	}
+	if (mv <= curve[ARRAY_SIZE(curve) - 1].mv) {
+		return 0;
+	}
+	for (size_t i = 0; i < ARRAY_SIZE(curve) - 1; i++) {
+		if (mv <= curve[i].mv && mv > curve[i + 1].mv) {
+			int dmv = curve[i].mv - curve[i + 1].mv;
+			int dpct = (int)curve[i].pct - (int)curve[i + 1].pct;
+			int frac = (mv - curve[i + 1].mv) * dpct / dmv;
+			return (int)curve[i + 1].pct + frac;
+		}
+	}
+	return -1;
+}
+
 bool power_usb_present(void)
 {
 	return nrf_power_usbregstatus_vbusdet_get(NRF_POWER);

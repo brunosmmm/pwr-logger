@@ -206,14 +206,14 @@ static void render_status_bar(const struct device *disp, const char *primary)
 	char bar[20];
 	const char *st = state_abbr3(logctl_state());
 	bool usb = power_usb_present();
-	int mv = power_batt_mv();
+	int pct = power_batt_pct();
 
 	if (primary && *primary) {
 		snprintf(bar, sizeof(bar), "%-3s %s", st, primary);
 	} else if (usb) {
 		snprintf(bar, sizeof(bar), "%-3s USB", st);
-	} else if (mv > 0) {
-		snprintf(bar, sizeof(bar), "%-3s BAT %d.%dV", st, mv/1000, (mv%1000)/100);
+	} else if (pct >= 0) {
+		snprintf(bar, sizeof(bar), "%-3s BAT %d%%", st, pct);
 	} else {
 		snprintf(bar, sizeof(bar), "%-3s BAT", st);
 	}
@@ -395,17 +395,20 @@ static void page_system(const struct device *disp)
 	int64_t up_ms = k_uptime_get();
 	uint32_t up_s = (up_ms > 0) ? (uint32_t)(up_ms / 1000) : 0u;
 	int mv = power_batt_mv();
+	int pct = power_batt_pct();
 
 	char lu[24], lb[24], lv[24];
 	snprintf(lu, sizeof(lu), "up %u:%02u:%02u", up_s / 3600u, (up_s / 60u) % 60u, up_s % 60u);
 	/* USB takes priority: when on USB the SAADC battery channel reads VDD
 	 * (~3.3 V from the regulator), which is NOT the battery voltage and is
 	 * misleading. Only show "bat <V>" when the device is actually running
-	 * from battery; on USB the source label is the useful information. */
+	 * from battery; on USB the source label is the useful information.
+	 * SoC %% is the primary readout; the raw mV is auxiliary for diagnosis. */
 	if (power_usb_present()) {
 		snprintf(lb, sizeof(lb), "src USB");
-	} else if (mv > 0) {
-		snprintf(lb, sizeof(lb), "bat %d.%02dV", mv / 1000, (mv % 1000) / 10);
+	} else if (pct >= 0) {
+		snprintf(lb, sizeof(lb), "bat %d%% %d.%02dV",
+			 pct, mv / 1000, (mv % 1000) / 10);
 	} else {
 		snprintf(lb, sizeof(lb), "bat --");
 	}

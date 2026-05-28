@@ -13,6 +13,7 @@ int  power_init(void);       /* rail ON; (POFCON / DC/DC added in later sub-step
 void power_rail(bool on);    /* enable/disable the front-end 3.3 V rail */
 
 int  power_batt_mv(void);    /* last cached VDDH (battery) reading, mV; <0 = unknown */
+int  power_batt_pct(void);   /* Li-Po SoC 0..100 from the cached mv; -1 = unknown */
 void power_batt_sample(void); /* refresh the reading; call ONLY when the SAADC is free
 			      * (fast channel stopped) -- e.g. boot, idle, offload */
 void power_batt_invalidate(void);          /* mark cached reading stale (-> "BAT --") */
