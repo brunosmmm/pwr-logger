@@ -42,6 +42,45 @@ static const uint8_t ack_pat[] = {
 };
 #define ROTATE_FLASH_TICKS ((int)ARRAY_SIZE(ack_pat))
 
+/* ---- LED diag mode ------------------------------------------------------- */
+static atomic_t s_led_diag_active;
+
+void controls_led_diag(int mode)
+{
+	switch (mode) {
+	case -1:   /* tristate: input, no pull -- any glow is external */
+		gpio_pin_configure_dt(&led_g, GPIO_INPUT);
+		nrf_gpio_cfg(led_g.pin, NRF_GPIO_PIN_DIR_INPUT,
+			     NRF_GPIO_PIN_INPUT_DISCONNECT,
+			     NRF_GPIO_PIN_NOPULL, NRF_GPIO_PIN_S0S1,
+			     NRF_GPIO_PIN_NOSENSE);
+		atomic_set(&s_led_diag_active, 1);
+		break;
+	case 0:
+		atomic_set(&s_led_diag_active, 1);
+		gpio_pin_configure_dt(&led_g, GPIO_OUTPUT_INACTIVE);
+		nrf_gpio_cfg(led_g.pin, NRF_GPIO_PIN_DIR_OUTPUT,
+			     NRF_GPIO_PIN_INPUT_DISCONNECT,
+			     NRF_GPIO_PIN_NOPULL, NRF_GPIO_PIN_S0S1,
+			     NRF_GPIO_PIN_NOSENSE);
+		gpio_pin_set_dt(&led_g, 0);
+		break;
+	case 1:
+		atomic_set(&s_led_diag_active, 1);
+		gpio_pin_configure_dt(&led_g, GPIO_OUTPUT_ACTIVE);
+		nrf_gpio_cfg(led_g.pin, NRF_GPIO_PIN_DIR_OUTPUT,
+			     NRF_GPIO_PIN_INPUT_DISCONNECT,
+			     NRF_GPIO_PIN_NOPULL, NRF_GPIO_PIN_S0S1,
+			     NRF_GPIO_PIN_NOSENSE);
+		gpio_pin_set_dt(&led_g, 1);
+		break;
+	default:   /* resume engine */
+		gpio_pin_configure_dt(&led_g, GPIO_OUTPUT_INACTIVE);
+		atomic_clear(&s_led_diag_active);
+		break;
+	}
+}
+
 /* ---- LED pattern engine -------------------------------------------------- */
 /* A 50 ms tick reads logctl_state() and an optional override (e.g. ROTATE
  * triple-flash) to decide the LED level. Counters are mod the longest
@@ -58,6 +97,11 @@ static void led_tick_fn(struct k_work *w)
 	static uint32_t cnt;
 	bool on;
 	atomic_val_t flash = atomic_get(&s_flash_ticks);
+
+	if (atomic_get(&s_led_diag_active)) {
+		k_work_schedule(&led_tick_work, K_MSEC(LED_TICK_MS));
+		return;
+	}
 
 	if (flash > 0 && flash <= ROTATE_FLASH_TICKS) {
 		/* Play back ack_pat[] from start to end. `flash` counts down,
@@ -312,6 +356,14 @@ void controls_init(void)
 		     NRF_GPIO_PIN_NOPULL,
 		     NRF_GPIO_PIN_S0S1,
 		     NRF_GPIO_PIN_NOSENSE);
+	/* DIAG: read back PIN_CNF and OUT to confirm the metal-layer state.
+	 * Layout per nRF52840 spec: PIN_CNF bits 0=DIR, 1=INPUT, 2-3=PULL,
+	 * 8-10=DRIVE, 16-17=SENSE. PULL must be 00 (no pull). */
+	uint32_t cnf = NRF_P0->PIN_CNF[9];
+	uint32_t out = (NRF_P0->OUT >> 9) & 1U;
+	LOG_INF("LED pin P0.09: PIN_CNF=0x%08x OUT=%u (DIR=%u PULL=%u DRIVE=%u)",
+		cnf, out,
+		cnf & 1U, (cnf >> 2) & 3U, (cnf >> 8) & 7U);
 
 	btn_install(&rec_btn,     &rec_g,    rec_edge);
 	btn_install(&rotate_btn,  &rotate_g, rotate_edge);

@@ -16,4 +16,11 @@
  */
 void controls_init(void);
 
+/* DIAG: pause the led_tick engine and force the LED GPIO to a state for
+ * hardware probing. mode: 1 = drive HIGH, 0 = drive LOW, -1 = INPUT NOPULL
+ * (tristate -- any glow with this set is external to the chip),
+ * anything else = resume the led_tick engine. Combined with a DMM on the
+ * pin this separates "GPIO can't sink" from "external current source". */
+void controls_led_diag(int mode);
+
 #endif /* CONTROLS_H_ */

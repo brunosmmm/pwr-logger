@@ -7,6 +7,7 @@
 #include "ui.h"
 #include "cfgfile.h"
 #include "logger.h"
+#include "controls.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -375,6 +376,31 @@ static int cmd_ui_icons(const struct shell *sh, size_t argc, char **argv)
 	return 0;
 }
 
+static int cmd_led_diag(const struct shell *sh, size_t argc, char **argv)
+{
+	if (argc < 2) {
+		shell_error(sh, "usage: pwr led <0|1|z|auto>");
+		shell_print(sh,  "  0    drive LOW  (output, no pull)");
+		shell_print(sh,  "  1    drive HIGH (output, no pull)");
+		shell_print(sh,  "  z    tristate  (input no pull -- glow = external)");
+		shell_print(sh,  "  auto resume the state-driven blink engine");
+		return -1;
+	}
+	const char *a = argv[1];
+	int mode;
+
+	if (!strcmp(a, "0"))      mode = 0;
+	else if (!strcmp(a, "1")) mode = 1;
+	else if (!strcmp(a, "z")) mode = -1;
+	else                      mode = 99;   /* anything else -> resume */
+
+	controls_led_diag(mode);
+	shell_print(sh, "led diag: %s",
+		    mode == 0 ? "LOW"  : mode == 1 ? "HIGH" :
+		    mode == -1 ? "TRISTATE (input no-pull)" : "resumed");
+	return 0;
+}
+
 SHELL_STATIC_SUBCMD_SET_CREATE(time_sub,
 	SHELL_CMD(get, NULL, "show current UTC time", cmd_time_get),
 	SHELL_CMD(set, NULL, "set time: pwr time set <epoch>", cmd_time_set),
@@ -423,6 +449,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(pwr_sub,
 	SHELL_CMD(energy,   &energy_sub, "energy accumulators", NULL),
 	SHELL_CMD(ui,       &ui_sub,     "UI page select", NULL),
 	SHELL_CMD(marker,   NULL,        "post a TDMS marker: pwr marker [msg]", cmd_marker),
+	SHELL_CMD(led,      NULL,        "led <0|1|z|auto>: diag-drive the status LED", cmd_led_diag),
 	SHELL_SUBCMD_SET_END);
 
 SHELL_CMD_REGISTER(pwr, &pwr_sub, "pwr-logger control", NULL);
