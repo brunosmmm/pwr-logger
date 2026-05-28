@@ -56,12 +56,15 @@ static void autooff_arm(void)   { /* no-op: see header comment */ }
 static void autooff_cancel(void) { /* no-op: see header comment */ }
 
 /* ---- transitions ------------------------------------------------------- */
+static void cancel_pending_idle(void);
+
 static void to_logging(void)
 {
 	if (s_state == LS_LOGGING) {
 		return;
 	}
 	enum logctl_state prev = s_state;
+	cancel_pending_idle();           /* defuse any orphaned idle_finalize_work */
 	autooff_cancel();
 	power_rail(true);                /* may be coming from dark idle */
 	if (prev == LS_IDLE) {
@@ -163,6 +166,7 @@ static void to_offload(void)
 		return;
 	}
 	enum logctl_state prev = s_state;
+	cancel_pending_idle();           /* defuse any orphaned idle_finalize_work */
 	autooff_cancel();
 	power_rail(true);                /* SD needs the rail (may be idle) */
 	if (prev == LS_IDLE) {
@@ -250,13 +254,38 @@ static void handle(enum logctl_event ev)
 		cancel_pending_idle();   /* aborted shutdown if we were in the warn window */
 		if (s_state == LS_IDLE) {
 			wake_idle();         /* full re-wake if we already finalized */
+		} else if (s_state == LS_LOGGING || s_state == LS_OFFLOAD) {
+			/* The board's 3V3 source switches battery->VBUS on plug-
+			 * in; the brief input dip browns out the SSD1306 charge
+			 * pump the same way the unplug transient does (see
+			 * EV_USB_OFF below). Re-issue the init sequence so the
+			 * panel comes back. wake_idle() already does this on
+			 * the LS_IDLE branch. */
+			display_set_powered(true);
 		}
 		break;
 	case EV_USB_OFF:
 		s_usb = false;
-		/* battery now: if we're not recording, go dark. Logging continues. */
 		if (s_state == LS_STOPPED || s_state == LS_OFFLOAD) {
+			/* Not recording: go dark on battery (3 s notice first). */
 			enter_idle();
+		} else if (s_state == LS_LOGGING) {
+			/* Keep recording. But: the on-board 3V3 regulator dips
+			 * briefly when its input switches from VBUS to battery,
+			 * and the dip propagates through the P0.13 gate to the
+			 * SSD1306 VCC. The chip's I2C stays alive (acks fine)
+			 * but its charge pump (which generates the ~7-9 V the
+			 * panel needs) collapses, and the panel goes dark even
+			 * though our render thread is still writing GDDRAM.
+			 * Replaying the driver's init sequence -- specifically
+			 * the 8Dh 14h charge-pump-enable command -- brings the
+			 * panel back. Writer thread is unaffected (i2c0 / SAADC
+			 * / SD are on the same rail and the rail is back up by
+			 * the time we get here; if any of those needed re-arm
+			 * we'd see fs_write / acquisition errors, which we
+			 * haven't). */
+			LOG_INF("USB removed during LOGGING -> reinit OLED");
+			display_set_powered(true);
 		}
 		break;
 	case EV_AUTOOFF:

@@ -119,8 +119,11 @@ static void disp_loop(void *a, void *b, void *c)
 			 * left only LOGGING + battery, ui_idle_ms expired,
 			 * panel blanked. User couldn't tell logging was
 			 * still going.) */
-			bool active = (logctl_state() == LS_LOGGING) ||
-				      (logctl_state() == LS_OFFLOAD);
+			/* Snapshot logctl_state() once so a mid-tick state
+			 * transition can't make the two reads disagree and
+			 * race the should_blank decision. */
+			enum logctl_state st = logctl_state();
+			bool active = (st == LS_LOGGING) || (st == LS_OFFLOAD);
 			bool should_blank = !on_usb && (sleep_s > 0) && !active &&
 					    (ui_idle_ms() > (int64_t)sleep_s * 1000);
 
@@ -147,6 +150,16 @@ static void disp_loop(void *a, void *b, void *c)
 void display_set_powered(bool on)
 {
 	if (on) {
+		/* Gate disp_loop renders BEFORE the init replay so cfb_print
+		 * data writes don't interleave with the SSD1306 command
+		 * sequence on i2c1 (the i2c driver serializes individual
+		 * transfers but not transactional command streams). This also
+		 * makes display_set_powered(true) safe to call from the
+		 * EV_USB_OFF path where s_powered is still 1 because the
+		 * chip's charge pump browned out without our knowledge. */
+		atomic_set(&s_powered, 0);
+		k_sleep(K_MSEC(2));        /* let any in-flight cfb_print drain */
+
 		/* SSD1306 power-on settling. The driver's own init uses
 		 * K_TIMEOUT_ABS_MS for the ready-time wait, which is in the
 		 * past on a runtime re-init -- so the first I2C write would
@@ -156,13 +169,18 @@ void display_set_powered(bool on)
 
 		/* Re-run the SSD1306 driver's init function -- re-sends the
 		 * full config sequence to a chip that lost everything when
-		 * the rail cycled. dev->ops.init is a public field; we skip
-		 * device_init() (it returns -EALREADY for an already-init
-		 * device). */
+		 * the rail cycled (or browned out via a USB-source-switch
+		 * transient on the regulator input). Critically this replays
+		 * the charge-pump enable (8Dh 14h) which is the bit that
+		 * gets cleared on any VCC dip and leaves the panel dark even
+		 * though I2C still ACKs. dev->ops.init is a public field; we
+		 * skip device_init() (it returns -EALREADY for an already-
+		 * init device). */
 		if (disp->ops.init) {
 			int rc = disp->ops.init(disp);
 			LOG_INF("display: re-init rc=%d", rc);
 			if (rc) {
+				/* leave s_powered=0; caller retries later */
 				return;
 			}
 		}
