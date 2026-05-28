@@ -34,26 +34,37 @@ int logctl_post(enum logctl_event ev)
 	return k_msgq_put(&evq, &e, K_NO_WAIT);
 }
 
-/* ---- auto-off (no longer arms System OFF) ----------------------------- *
- * Historically this scheduled an EV_AUTOOFF after `autooff_s` of dark idle
- * which then called to_ship() -> sys_poweroff(). We never want that: System
- * OFF resets the RTC peripherals and wipes uptime, so the LFXO-backed wall
- * clock has to re-sync from NVS on every wake -- and System OFF on this
- * board has no GPIO-SENSE / VBUSDETECT wake configured, so a press on REC
- * or a USB plug-in is silently ignored until somebody hits the reset pin.
+/* ---- auto-sleep: STOPPED-on-battery -> IDLE after autooff_s of inactivity *
+ * Repurposed from the original "dark-idle -> System OFF" behavior (commit
+ * b5787a4) which we excised because System OFF resets the LFXO-backed clock
+ * and has no configured wake source. Now the timer just transitions
+ * LS_STOPPED -> LS_IDLE via the normal enter_idle() path (3 s 'powering off'
+ * banner -> rail off -> stays in System ON with the RTC ticking + button +
+ * USB wake sources intact). The user-facing config keys stay the same
+ * (autooff_en, autooff_s); only the destination changes.
  *
- * The agreed design is "System ON deep sleep is the only sleep state."
- * sys_poweroff() runs ONLY on the explicit user EV_POWEROFF (CLI `pwr
- * poweroff` / BLE PWR_OP_POWEROFF). Dark-idle stays in System ON forever;
- * the LFXO keeps RTC1 ticking, USBD_MSG_VBUS_READY wakes us instantly,
- * and the existing GPIO EDGE_BOTH interrupts on REC/ROTATE post their
- * events into logctl as soon as the user touches a button.
- *
- * Kept as no-ops so existing callers / config keys (`autooff_en`,
- * `autooff_s`) stay valid; reintroduce a real action here only if we add
- * a deeper-tier sleep that does NOT call sys_poweroff(). */
-static void autooff_arm(void)   { /* no-op: see header comment */ }
-static void autooff_cancel(void) { /* no-op: see header comment */ }
+ * Armed by every transition that lands in LS_STOPPED on battery; cancelled
+ * by any user action that implies "I am here doing something" (button press
+ * -> LOGGING / OFFLOAD / EV_WAKE, USB plug-in -> wake_idle / STOPPED-on-USB,
+ * etc.) -- the existing autooff_cancel call sites cover all of those. */
+static void autooff_fn(struct k_work *work);
+static K_WORK_DELAYABLE_DEFINE(autooff_work, autooff_fn);
+
+static void autooff_arm(void)
+{
+	const struct app_cfg *c = config_get();
+
+	if (c->autooff_en && c->autooff_s > 0) {
+		k_work_schedule(&autooff_work, K_SECONDS(c->autooff_s));
+	}
+}
+static void autooff_cancel(void) { k_work_cancel_delayable(&autooff_work); }
+
+static void autooff_fn(struct k_work *work)
+{
+	ARG_UNUSED(work);
+	logctl_post(EV_AUTOOFF);
+}
 
 /* ---- transitions ------------------------------------------------------- */
 static void cancel_pending_idle(void);
@@ -157,7 +168,17 @@ static void wake_idle(void)         /* USB plugged (or REC) -> come back up */
 	ble_stream_set_adv(true);
 	power_batt_sample();
 	s_state = LS_STOPPED;
-	LOG_INF("-> STOPPED (woke from idle)");
+	if (!s_usb) {
+		/* Woken by a button press on battery (not USB plug-in). Arm
+		 * the auto-sleep timer so the device dozes off again if the
+		 * user walked away without starting a recording. Any
+		 * subsequent button -> LOGGING / OFFLOAD / USB plug-in
+		 * cancels via the standard autooff_cancel call sites. */
+		autooff_arm();
+		LOG_INF("-> STOPPED (woke from idle, auto-sleep armed)");
+	} else {
+		LOG_INF("-> STOPPED (woke from idle, USB)");
+	}
 }
 
 static void to_offload(void)
@@ -306,8 +327,19 @@ static void handle(enum logctl_event ev)
 		}
 		break;
 	case EV_AUTOOFF:
-		/* See autooff header comment: never call to_ship() from here.
-		 * Dark idle stays in System ON deep sleep indefinitely. */
+		/* Inactivity timer expired in LS_STOPPED on battery -> sleep.
+		 * Re-validate state and USB at fire time: the timer is armed
+		 * unconditionally by stop_recording / wake_idle but the user
+		 * could have plugged USB in or started recording during the
+		 * delay; in those cases the cancel call covered us but a
+		 * double-check is cheap and the symptom of getting it wrong
+		 * (display dark mid-USB) is the very regression we just
+		 * cleaned up. */
+		if (s_state == LS_STOPPED && !s_usb) {
+			LOG_INF("auto-sleep: %u s STOPPED on battery -> IDLE",
+				config_get()->autooff_s);
+			enter_idle();
+		}
 		break;
 	case EV_LOW_BATT:
 		LOG_WRN("low battery (%d mV)", power_batt_mv());

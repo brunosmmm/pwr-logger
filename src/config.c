@@ -11,7 +11,7 @@
 
 LOG_MODULE_REGISTER(config, LOG_LEVEL_INF);
 
-#define CFG_VERSION 5
+#define CFG_VERSION 6
 #define CFG_KEY     "pwr/cfg"
 #define CFG_BLOB    CFG_KEY "/blob"
 
@@ -34,8 +34,8 @@ struct cfg_item {
 
 static const struct cfg_item items[] = {
 	ITEM("autostart",       T_BOOL, autostart,       1),
-	ITEM("autooff_en",      T_BOOL, autooff_en,      0),
-	ITEM("autooff_s",       T_U32,  autooff_s,       1800),
+	ITEM("autooff_en",      T_BOOL, autooff_en,      1),     /* auto-sleep STOPPED-on-batt -> IDLE */
+	ITEM("autooff_s",       T_U32,  autooff_s,       30),    /* seconds of inactivity */
 	ITEM("idle_ble",        T_BOOL, idle_ble,        0),
 	ITEM("pof_trip_mv",     T_U16,  pof_trip_mv,     3200),
 	ITEM("pof_crit_mv",     T_U16,  pof_crit_mv,     3000),
