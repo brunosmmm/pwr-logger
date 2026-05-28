@@ -405,9 +405,9 @@ static int cmd_ui_icons(const struct shell *sh, size_t argc, char **argv)
 /* FatFs/SD over SPI pays per-call FAT-lookup + sector-iteration overhead
  * that's mostly fixed; larger reads amortize it. Sweet spot depends on
  * whether SD reads are on the critical path. With ping-pong prefetch
- * (see cmd_download) reads run concurrent to USB shipping, so we can
- * afford bigger reads. */
-#define DL_CHUNK 16384
+ * (see cmd_download) reads run concurrent to USB shipping; the only cap
+ * is RAM (2 * DL_CHUNK BSS for the ping-pong buffers). */
+#define DL_CHUNK 32768
 
 static const struct device *console_dev = DEVICE_DT_GET(DT_CHOSEN(zephyr_console));
 
