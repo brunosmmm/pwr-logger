@@ -206,11 +206,17 @@ int pwr_bulk_send(const uint8_t *data, size_t len)
 			chunk = 1024;
 		}
 
+		/* Alloc from the shared UDC buf pool. The pool can be smaller
+		 * than PWR_BULK_BUF_COUNT * chunk (CONFIG_UDC_BUF_POOL_SIZE
+		 * is shared with CDC + MSC). Treat alloc failure as
+		 * back-pressure: drop the slot, wait briefly for in-flight
+		 * transfers to complete + release pool memory, retry. */
 		struct net_buf *buf = usbd_ep_buf_alloc(pd->c_data, ep, chunk);
+
 		if (buf == NULL) {
-			LOG_ERR("buf alloc failed");
 			k_sem_give(&pd->free_slots);
-			return -ENOMEM;
+			k_sleep(K_MSEC(1));
+			continue;
 		}
 		net_buf_add_mem(buf, data, chunk);
 		int err = usbd_ep_enqueue(pd->c_data, buf);

@@ -402,7 +402,13 @@ static int cmd_ui_icons(const struct shell *sh, size_t argc, char **argv)
  * formatting; the shell prompt that re-appears after the command finishes
  * is just trailing noise the host can ignore. */
 
-#define DL_CHUNK 1024
+/* FatFs/SD over SPI pays per-call FAT-lookup + sector-iteration overhead
+ * that's mostly fixed; larger reads amortize it. 8 KB measured as the
+ * sweet spot on this stack: 257 KB/s @ 1 KB -> 295 KB/s @ 8 KB (+15%);
+ * 16 KB regresses to ~272 KB/s (other bottlenecks dominate). pwr_bulk_send
+ * internally splits this back into 1 KB USB transfers to fit the UDC buf
+ * pool, so this size affects only the SD-side amortization. */
+#define DL_CHUNK 8192
 
 static const struct device *console_dev = DEVICE_DT_GET(DT_CHOSEN(zephyr_console));
 
