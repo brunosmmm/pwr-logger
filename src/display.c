@@ -5,6 +5,7 @@
 #include "ui.h"
 #include "config.h"
 #include "power.h"
+#include "logctl.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -109,7 +110,18 @@ static void disp_loop(void *a, void *b, void *c)
 		if (atomic_get(&s_powered)) {
 			uint16_t sleep_s = config_get()->display_sleep_s;
 			bool on_usb = power_usb_present();
-			bool should_blank = !on_usb && (sleep_s > 0) &&
+			/* Never blank during LOGGING -- the on-screen state
+			 * IS the recording confirmation; an unintended OLED
+			 * sleep reads as "the device powered off mid-record"
+			 * even though the rail and the writer are still
+			 * running. (Observed regression: cfg.display_sleep_s
+			 * was non-zero from a prior NVS write, USB unplug
+			 * left only LOGGING + battery, ui_idle_ms expired,
+			 * panel blanked. User couldn't tell logging was
+			 * still going.) */
+			bool active = (logctl_state() == LS_LOGGING) ||
+				      (logctl_state() == LS_OFFLOAD);
+			bool should_blank = !on_usb && (sleep_s > 0) && !active &&
 					    (ui_idle_ms() > (int64_t)sleep_s * 1000);
 
 			if (should_blank && !s_blanked) {
