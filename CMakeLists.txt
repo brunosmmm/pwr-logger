@@ -5,6 +5,7 @@ project(pwr_logger C)
 
 target_sources(app PRIVATE
     src/main.c
+    src/board_init.c
     src/bringup.c
     src/timebase.c
     src/acquisition.c
