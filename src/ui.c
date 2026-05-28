@@ -227,21 +227,16 @@ static enum stats_ch cycle_channel(uint8_t cycle_s)
 }
 
 /* ---- status bar (yellow strip @ y=0..15, inverted) ---------------------- *
- * Layout (128 x 16) -- four fixed icon slots so icons never move based on
- * which conditions happen to be true:
- *   x= 0..15   chain-link icon  when on USB (slot stays blank on battery)
- *   x=16..31   battery icon     ALWAYS shown; empty shell when on USB or the
- *                               reading is unknown, 25/50/75/100% fill bars
- *                               when on battery
- *   x=32..47   REC dot          when LS_LOGGING (independent of USB so the
- *                               recording indicator is visible even plugged in)
- *   x=48..63   Bluetooth        when a central is subscribed
- *   x=64..127  primary text (~6 chars at 10x16; long labels clip at x=128)
- *
- * Implementation: switch to the 16x16 icons font for the four icon slots,
- * switch back to text font for the primary. cfb_invert_area flips the whole
- * strip at the end so icons + text both appear dark on the bright yellow
- * background.
+ * Layout (128 x 16) -- three fixed icon slots:
+ *   x= 0..15   power source: chain-link icon when on USB, battery icon
+ *              (5 fill levels by SoC bucket) when on battery. They're
+ *              mutually exclusive so they share the same slot; on USB the
+ *              battery reading is meaningless (SAADC reads VBUS via the
+ *              divider, ~4.8 V), so no point drawing an empty shell.
+ *   x=16..31   REC dot when LS_LOGGING -- its own dedicated slot so it
+ *              stays visible even while plugged in.
+ *   x=32..47   Bluetooth when a central is subscribed.
+ *   x=48..127  primary label text (~8 chars at 10x16).
  *
  * Icon glyph codepoints live in icons_font.c:
  *   '\x40'..'\x44'  battery 0..100 %% in 25 %% steps
@@ -256,7 +251,6 @@ static void render_status_bar(const struct device *disp, const char *primary)
 	enum logctl_state lst = logctl_state();
 	char one[2] = { 0, 0 };
 
-	/* --- icon slots -------------------------------------------------- */
 	cfb_framebuffer_set_font(disp, display_font_icons());
 
 	if (ui_icon_test_active()) {
@@ -268,46 +262,37 @@ static void render_status_bar(const struct device *disp, const char *primary)
 		return;
 	}
 
-	/* Slot 0: chain-link when USB is plugged. */
+	/* Slot 0: link icon when on USB; battery icon when on battery. */
 	if (usb) {
 		one[0] = '\x45';
 		cfb_print(disp, one, 0, 0);
-	}
-
-	/* Slot 1: battery, ALWAYS rendered. The SAADC battery channel reads
-	 * VDD via the divider while on USB (~4.8 V meaningless), so on USB we
-	 * draw the empty shell as a "reading unavailable" indicator rather
-	 * than hiding the icon and having the bar reflow. On battery, the
-	 * fill level reflects the SoC bucket. */
-	uint8_t bat_glyph = 0x40;   /* default: empty shell */
-	if (!usb && pct >= 0) {
+	} else if (pct >= 0) {
 		/* Bucket SoC: <12 = empty, 12..37 = 25%, 37..62 = 50%,
 		 * 62..87 = 75%, >=87 = full. */
 		uint8_t b = (pct >= 87) ? 4 :
 			    (pct >= 62) ? 3 :
 			    (pct >= 37) ? 2 :
 			    (pct >= 12) ? 1 : 0;
-		bat_glyph = (uint8_t)(0x40 + b);
+		one[0] = (char)(0x40 + b);
+		cfb_print(disp, one, 0, 0);
 	}
-	one[0] = (char)bat_glyph;
-	cfb_print(disp, one, 16, 0);
 
-	/* Slot 2: REC dot when logging, regardless of USB. */
+	/* Slot 1: REC dot when logging (own slot so it's visible on USB too). */
 	if (lst == LS_LOGGING) {
 		one[0] = '\x47';
-		cfb_print(disp, one, 32, 0);
+		cfb_print(disp, one, 16, 0);
 	}
 
-	/* Slot 3: Bluetooth when a central is subscribed. */
+	/* Slot 2: Bluetooth when a central is subscribed. */
 	if (ble_stream_subscribed()) {
 		one[0] = '\x46';
-		cfb_print(disp, one, 48, 0);
+		cfb_print(disp, one, 32, 0);
 	}
 
 	/* --- primary text right of the icons --------------------------- */
 	cfb_framebuffer_set_font(disp, display_font_text());
 	if (primary && *primary) {
-		cfb_print(disp, primary, 64, 0);
+		cfb_print(disp, primary, 48, 0);
 	}
 
 	/* Invert the entire yellow strip -> bright background, dark icons + text. */
