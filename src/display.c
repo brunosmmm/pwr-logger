@@ -174,26 +174,32 @@ void display_set_powered(bool on)
 		/* SSD1306 power-on settling. The driver's own init uses
 		 * K_TIMEOUT_ABS_MS for the ready-time wait, which is in the
 		 * past on a runtime re-init -- so the first I2C write would
-		 * land before the chip finishes its internal POR. 100 ms is
-		 * well beyond the datasheet's ~10 ms requirement. */
-		k_sleep(K_MSEC(100));
+		 * land before the chip finishes its internal POR. After a
+		 * brief brown-out 100 ms is plenty, but on wake from a
+		 * minutes-long LS_IDLE where the OLED VCC fully drained, the
+		 * chip needs longer (observed -EIO from ops.init at 100 ms
+		 * post-rail-on when waking from a 30 s rail-off). Use 200 ms
+		 * upfront plus up to 3 init retries with 150 ms between, so
+		 * a slow-to-come-up panel still works. */
+		k_sleep(K_MSEC(200));
 
-		/* Re-run the SSD1306 driver's init function -- re-sends the
-		 * full config sequence to a chip that lost everything when
-		 * the rail cycled (or browned out via a USB-source-switch
-		 * transient on the regulator input). Critically this replays
-		 * the charge-pump enable (8Dh 14h) which is the bit that
-		 * gets cleared on any VCC dip and leaves the panel dark even
-		 * though I2C still ACKs. dev->ops.init is a public field; we
-		 * skip device_init() (it returns -EALREADY for an already-
-		 * init device). */
+		int rc = -EIO;
 		if (disp->ops.init) {
-			int rc = disp->ops.init(disp);
-			LOG_INF("display: re-init rc=%d", rc);
-			if (rc) {
-				/* leave s_powered=0; caller retries later */
-				return;
+			for (int attempt = 0; attempt < 3; attempt++) {
+				rc = disp->ops.init(disp);
+				if (rc == 0) {
+					break;
+				}
+				LOG_WRN("display: re-init attempt %d -> rc=%d, retrying",
+					attempt, rc);
+				k_sleep(K_MSEC(150));
 			}
+		}
+		LOG_INF("display: re-init rc=%d", rc);
+		if (rc) {
+			/* leave s_powered=0; caller can retry the whole
+			 * display_set_powered(true) sequence later. */
+			return;
 		}
 		display_blanking_off(disp);
 		cfb_framebuffer_clear(disp, true);
