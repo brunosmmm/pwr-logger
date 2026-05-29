@@ -37,6 +37,7 @@
 #include "storage.h"
 #include "wdt.h"
 #include "display.h"
+#include "clock.h"
 
 /* Secondary slot size from devicetree (no runtime overhead). */
 #define OTA_SLOT_SIZE  FIXED_PARTITION_SIZE(slot1_partition)
@@ -198,6 +199,11 @@ int ota_apply_from_sd(ota_progress_cb_t cb, void *user)
 	if (we_mounted) {
 		(void)storage_unmount();
 	}
+
+	/* Flush wall-clock estimate before reset so the swapped-in image
+	 * comes up with a fresh epoch and the user isn't slowly drifting
+	 * back across every OTA. */
+	clk_persist();
 
 	/* Cold reset so MCUboot picks up the pending TEST swap. */
 	sys_reboot(SYS_REBOOT_COLD);

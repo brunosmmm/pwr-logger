@@ -698,7 +698,8 @@ static int cmd_reboot(const struct shell *sh, size_t argc, char **argv)
 {
 	ARG_UNUSED(argc); ARG_UNUSED(argv);
 	shell_print(sh, "rebooting");
-	k_sleep(K_MSEC(200));   /* let the shell finish writing */
+	clk_persist();                  /* flush wall clock so reboot loses ~0 s */
+	k_sleep(K_MSEC(200));           /* let the shell finish writing */
 	sys_reboot(SYS_REBOOT_COLD);
 	return 0;   /* unreachable */
 }

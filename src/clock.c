@@ -59,11 +59,20 @@ void clk_set(time_t t)
 static void persist_work_fn(struct k_work *work);
 static K_WORK_DELAYABLE_DEFINE(persist_work, persist_work_fn);
 
+/* Persist cadence. Bounds how stale the restored epoch is on an
+ * unplanned reset (panic, watchdog, power loss). 60 s keeps the worst-
+ * case loss at one minute, costing ~1 NVS write/min = ~1440/day. The
+ * settings NVS subsystem wear-levels across multiple sectors so this
+ * is comfortable on a 10k-cycle/page flash budget. Planned shutdown
+ * paths (pwr reboot, OTA apply, sys_reboot) call clk_persist() inline
+ * so they lose nothing. */
+#define CLK_PERSIST_PERIOD K_SECONDS(60)
+
 static void persist_work_fn(struct k_work *work)
 {
 	ARG_UNUSED(work);
 	persist();
-	k_work_schedule(&persist_work, K_MINUTES(10));
+	k_work_schedule(&persist_work, CLK_PERSIST_PERIOD);
 }
 
 void clk_start(void)
@@ -77,7 +86,7 @@ void clk_start(void)
 	} else {
 		LOG_INF("clock unset (awaiting sync)");
 	}
-	k_work_schedule(&persist_work, K_MINUTES(10));
+	k_work_schedule(&persist_work, CLK_PERSIST_PERIOD);
 }
 
 static int clk_h_set(const char *name, size_t len, settings_read_cb read_cb, void *cb_arg)
