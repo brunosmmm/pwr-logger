@@ -92,6 +92,17 @@ static atomic_t s_flash_ticks;   /* triple-flash remaining, drives override */
 static void led_tick_fn(struct k_work *w);
 static K_WORK_DELAYABLE_DEFINE(led_tick_work, led_tick_fn);
 
+void controls_pause(void)
+{
+	k_work_cancel_delayable(&led_tick_work);
+	(void)gpio_pin_set_dt(&led_g, 0);
+}
+
+void controls_resume(void)
+{
+	k_work_schedule(&led_tick_work, K_MSEC(LED_TICK_MS));
+}
+
 static void led_tick_fn(struct k_work *w)
 {
 	ARG_UNUSED(w);

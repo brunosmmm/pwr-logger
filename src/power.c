@@ -162,6 +162,16 @@ static bool s_pof_tripped;
 static void pof_poll_fn(struct k_work *work);
 static K_WORK_DELAYABLE_DEFINE(pof_poll, pof_poll_fn);
 
+void power_pause(void)
+{
+	k_work_cancel_delayable(&pof_poll);
+}
+
+void power_resume(void)
+{
+	k_work_schedule(&pof_poll, K_MSEC(500));
+}
+
 static void pof_poll_fn(struct k_work *work)
 {
 	ARG_UNUSED(work);

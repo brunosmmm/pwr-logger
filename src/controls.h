@@ -16,6 +16,14 @@
  */
 void controls_init(void);
 
+/* Pause / resume the 20 Hz led_tick work. Called from logctl on
+ * IDLE entry / exit so the CPU isn't woken 20 times per second to
+ * do nothing in dark idle. The LED is driven low explicitly on
+ * pause; resume re-arms the tick (which decides the pattern from
+ * logctl_state()). Idempotent. */
+void controls_pause(void);
+void controls_resume(void);
+
 /* DIAG: pause the led_tick engine and force the LED GPIO to a state for
  * hardware probing. mode: 1 = drive HIGH, 0 = drive LOW, -1 = INPUT NOPULL
  * (tristate -- any glow with this set is external to the chip),

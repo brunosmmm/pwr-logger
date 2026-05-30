@@ -21,4 +21,10 @@ void power_batt_refresh_during_acq(void);  /* pause SAADC -> sample -> resume; ~
 
 bool power_usb_present(void); /* VBUS detected right now (USB plugged) */
 
+/* Pause / resume the 5 Hz POFCON poll. Called from logctl on IDLE
+ * entry/exit. The rail is off in IDLE so there's nothing to protect
+ * against POFWARN; polling 5x/s only adds wake-up overhead. Idempotent. */
+void power_pause(void);
+void power_resume(void);
+
 #endif /* POWER_H_ */

@@ -7,6 +7,7 @@
 #include "ble_stream.h"
 #include "display.h"
 #include "ota.h"
+#include "controls.h"
 
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
@@ -38,20 +39,40 @@ static const struct gpio_dt_spec cnvr = {
 	.dt_flags = GPIO_ACTIVE_LOW | GPIO_PULL_UP,
 };
 
+/* SD card chip-select (P1.4, declared via cs-gpios in the spi2 overlay).
+ * NOT covered by SPIM pinctrl-sleep: cs-gpios is the Zephyr SPI context's
+ * own GPIO, separate from the SPIM peripheral's pad assignments. With
+ * GPIO_OUTPUT_INACTIVE the MCU keeps driving CS high; after we cut the
+ * 3V3 rail the SD card's VCC is 0 V but our high pin sources through the
+ * card's ESD clamp -> mA-scale leakage. Reconfigure to DISCONNECTED
+ * before rail-off, restore as OUTPUT_INACTIVE on resume. */
+static const struct gpio_dt_spec sd_cs = {
+	.port = DEVICE_DT_GET(DT_NODELABEL(gpio1)),
+	.pin = 4,
+	.dt_flags = GPIO_ACTIVE_LOW,
+};
+
 static void switched_rail_suspend(void)
 {
 	(void)pm_device_action_run(i2c0_dev, PM_DEVICE_ACTION_SUSPEND);
 	(void)pm_device_action_run(i2c1_dev, PM_DEVICE_ACTION_SUSPEND);
 	(void)pm_device_action_run(spi2_dev, PM_DEVICE_ACTION_SUSPEND);
-	(void)gpio_pin_configure_dt(&cnvr, GPIO_INPUT);   /* no pull */
+	(void)gpio_pin_configure_dt(&cnvr,  GPIO_INPUT);          /* no pull */
+	(void)gpio_pin_configure_dt(&sd_cs, GPIO_DISCONNECTED);    /* CS hi-Z */
 }
 
 static void switched_rail_resume(void)
 {
-	(void)gpio_pin_configure_dt(&cnvr, GPIO_INPUT | GPIO_PULL_UP);
+	(void)gpio_pin_configure_dt(&sd_cs, GPIO_OUTPUT_INACTIVE);
+	(void)gpio_pin_configure_dt(&cnvr,  GPIO_INPUT | GPIO_PULL_UP);
 	(void)pm_device_action_run(spi2_dev, PM_DEVICE_ACTION_RESUME);
 	(void)pm_device_action_run(i2c1_dev, PM_DEVICE_ACTION_RESUME);
 	(void)pm_device_action_run(i2c0_dev, PM_DEVICE_ACTION_RESUME);
+
+	/* Restart the periodic tasks we paused in enter_idle_finalize. */
+	controls_resume();
+	power_resume();
+	ble_stream_resume_hb();
 }
 
 #define EVQ_LEN 8
@@ -162,7 +183,10 @@ static void enter_idle_finalize(void)
 {
 	(void)storage_unmount();         /* SD loses power with the rail */
 	ble_stream_set_adv(config_get()->idle_ble);
-	display_set_powered(false);      /* render thread stops before rail cuts */
+	ble_stream_pause_hb();           /* no point heartbeating with rail off */
+	display_set_powered(false);      /* render thread stops + parks on sem */
+	controls_pause();                /* stop 20 Hz LED tick */
+	power_pause();                   /* stop 5 Hz POFCON poll */
 	/* Suspend bus drivers BEFORE the rail goes off so their pinctrl-sleep
 	 * state lands (pads disconnected, no pulls). If we cut the rail first
 	 * the pads stay driven into unpowered slaves -> mA leakage. */

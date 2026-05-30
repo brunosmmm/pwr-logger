@@ -112,12 +112,22 @@ static bool render_notice_if_active(void)
  * during blanking; only the on-segment driver is suspended. */
 static bool s_blanked;
 
+/* Semaphore that gates the 2 Hz render tick: given by display_set_powered(true),
+ * taken by the loop with K_FOREVER when s_powered=0. Stops the 2 Hz CPU wake-up
+ * during LS_IDLE (rail off; nothing to render anyway). */
+static K_SEM_DEFINE(s_powered_sem, 0, 1);
+
 static void disp_loop(void *a, void *b, void *c)
 {
 	ARG_UNUSED(a);
 	ARG_UNUSED(b);
 	ARG_UNUSED(c);
 	while (1) {
+		/* If unpowered, block on the semaphore -- no 500 ms wake. */
+		if (!atomic_get(&s_powered)) {
+			(void)k_sem_take(&s_powered_sem, K_FOREVER);
+			continue;
+		}
 		if (atomic_get(&s_powered)) {
 			uint16_t sleep_s = config_get()->display_sleep_s;
 			bool on_usb = power_usb_present();
@@ -204,10 +214,12 @@ void display_set_powered(bool on)
 		display_blanking_off(disp);
 		cfb_framebuffer_clear(disp, true);
 		atomic_set(&s_powered, 1);
-		display_notice(NULL, 0);   /* clear any stale notice */
+		k_sem_give(&s_powered_sem);   /* wake the parked disp_loop */
+		display_notice(NULL, 0);      /* clear any stale notice */
 		LOG_INF("display: powered up");
 	} else {
 		atomic_set(&s_powered, 0);
+		/* disp_loop will park on s_powered_sem on its next iteration. */
 		LOG_INF("display: powered down (rail cut imminent)");
 	}
 }
