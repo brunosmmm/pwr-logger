@@ -631,36 +631,13 @@ def cmd_ota(bin_path, *, confirm_now=False, reset=True, mark_only=False,
                     console.print("[green]reset issued -- swap on boot[/]")
                 return 0
 
-            # ---- erase slot 1 (if needed) ----
-            # mcumgr's upload-check refuses with NO_FREE_SLOT (rc=9)
-            # when slot 1 already contains an image with certain flag
-            # states (notably: the prior confirmed image after a
-            # successful swap). Progressive erase during upload only
-            # helps if the slot is initially "free"; once flags are
-            # set it has to be erased explicitly first.
-            #
-            # The standalone erase blocks BLE for ~5 s while flash
-            # pages clear. Safe now that the firmware sets
-            # CONFIG_BT_PERIPHERAL_PREF_TIMEOUT=1000 (10 s supervision
-            # timeout) -- the response has time to come back. On
-            # firmware that predates that bump the erase still times
-            # out; in that case we just bail and let the user know.
-            console.print("[cyan]erasing slot 1...[/]")
-            try:
-                er = await request(SMP_OP_WRITE, SMP_GROUP_IMG,
-                                   SMP_ID_IMG_ERASE, {"slot": 1},
-                                   timeout=20.0)
-                rc = er.get("rc") if isinstance(er, dict) else None
-                if isinstance(rc, int) and rc != 0:
-                    console.print(
-                        f"[yellow]erase rc={rc} (continuing; upload may "
-                        f"still succeed if progressive-erase clears the slot)[/]")
-                else:
-                    console.print("[green]slot 1 erased[/]")
-            except Exception as e:
-                console.print(
-                    f"[yellow]erase: {type(e).__name__}: {e} "
-                    f"(continuing; upload may still succeed)[/]")
+            # NOTE: no explicit erase. The firmware has
+            # CONFIG_IMG_ERASE_PROGRESSIVELY=y, so the upload below
+            # erases each flash page just before writing it. The
+            # one-shot erase command is broken on this device: the
+            # ~5 s of blocking flash work exceeds the BT supervision
+            # timeout (CONFIG_BT_PERIPHERAL_PREF_TIMEOUT=42 = 420 ms),
+            # so the link drops before the response can come back.
 
             # ---- upload ----
             total = len(data)
