@@ -54,6 +54,35 @@ Start with fs_mgmt. Only move to L2CAP CoC if the use case demands the
 3-10x speedup; the host side gets more complex (BlueZ + bleak's
 `open_l2cap_channel` quirks).
 
+## BLE OTA: faster uploads
+
+Current `pwrctl ota` push runs at ~2 KB/s -- a 268 KB image takes
+~2 minutes. Bottleneck is per-chunk BLE round-trip latency, not
+bandwidth or CPU.
+
+**Three levers, in order of effort:**
+
+1. **Larger SMP payload per chunk.** Currently 112 B (conservative CBOR
+   overhead math). Bumping toward ~180 B (closer to MTU-244 cap) gives
+   ~1.6x fewer round-trips with no other change. Pure host-side edit
+   in `tools/pwrctl.py`.
+
+2. **Shorter BLE connection interval.** Default ~30 ms; request
+   7.5-15 ms from the central via `bt_conn_le_param_update` on the
+   device side when a DFU upload starts. Halves or quarters per-chunk
+   round-trip time. Limited by what the central accepts (BlueZ
+   usually obliges peripheral preference).
+
+3. **Send-window pipelining.** mcumgr SMP supports a send-ahead
+   window so the host can have N chunks in flight before getting acks.
+   Biggest win (potentially 3-5x) but adds real complexity to the
+   pwrctl tool. Some external SMP clients (mcumgr CLI, newer
+   smpclient) implement this.
+
+Combined estimate: 4-6x speedup -> 25-40 s for a full image instead of
+~140 s. Not blocking anything; do when BLE OTA becomes a daily-use
+path rather than an occasional one.
+
 ## Notes for both
 
 - File-system access list: gate `fs_mgmt` to `/SD:/` only via the
