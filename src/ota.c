@@ -32,6 +32,9 @@
 #include <zephyr/dfu/mcuboot.h>
 #include <zephyr/storage/flash_map.h>
 #include <zephyr/sys/reboot.h>
+#include <zephyr/sys/atomic.h>
+#include <zephyr/mgmt/mcumgr/mgmt/callbacks.h>
+#include <zephyr/mgmt/mcumgr/grp/img_mgmt/img_mgmt_callbacks.h>
 
 #include "ota.h"
 #include "storage.h"
@@ -227,4 +230,86 @@ bool ota_test_pending(void)
 int ota_pending_swap_type(void)
 {
 	return mcuboot_swap_type();
+}
+
+/* ---- BLE-mcumgr OTA in-flight tracking + display indicator ------------ *
+ *
+ * mcumgr drives image_mgmt's own upload state machine, completely
+ * independent of our ota_apply_from_sd() pipeline. To get the same UX
+ * (display banner + percent, no auto-sleep mid-upload) for BLE OTA, we
+ * register a callback on its DFU events and mirror the SD-path
+ * behaviour from here.
+ *
+ *   DFU_STARTED  -> set in_progress=1, show "BLE OTA"
+ *   DFU_CHUNK    -> update percent from req->off / req->size
+ *   DFU_PENDING  -> show "BLE done", in_progress stays set until STOPPED
+ *   DFU_STOPPED  -> clear in_progress
+ *
+ * The chunk callback's prev_status must be MGMT_CB_OK (otherwise upload
+ * was already denied by an earlier hook); we pass it through. We do not
+ * authorise/deny based on app state -- just observe + indicate.
+ */
+
+static atomic_t s_ota_in_progress;
+
+bool ota_in_progress(void)
+{
+	return atomic_get(&s_ota_in_progress) != 0;
+}
+
+static enum mgmt_cb_return ota_dfu_cb(uint32_t event,
+				      enum mgmt_cb_return prev_status,
+				      int32_t *rc, uint16_t *group,
+				      bool *abort_more, void *data,
+				      size_t data_size)
+{
+	ARG_UNUSED(rc);
+	ARG_UNUSED(group);
+	ARG_UNUSED(abort_more);
+	ARG_UNUSED(data);
+	ARG_UNUSED(data_size);
+
+	/* Note: no per-chunk percentage. The CHUNK event payload's
+	 * img_mgmt_upload_req is only fully defined in img_mgmt.h, which
+	 * pulls mcuboot internals that aren't reachable from app code
+	 * here. The static "BLE OTA" banner is sufficient indication
+	 * during the multi-minute upload; the user wanted to know
+	 * "something is happening" and that's what they get. */
+	switch (event) {
+	case MGMT_EVT_OP_IMG_MGMT_DFU_STARTED:
+		atomic_set(&s_ota_in_progress, 1);
+		display_notice("BLE OTA", 120000);
+		break;
+
+	case MGMT_EVT_OP_IMG_MGMT_DFU_PENDING:
+		display_notice("BLE OTA done", 8000);
+		break;
+
+	case MGMT_EVT_OP_IMG_MGMT_DFU_STOPPED:
+		atomic_set(&s_ota_in_progress, 0);
+		display_notice(NULL, 0);
+		break;
+
+	default:
+		break;
+	}
+
+	return prev_status;
+}
+
+static struct mgmt_callback ota_dfu_callback = {
+	.callback = ota_dfu_cb,
+	.event_id = MGMT_EVT_OP_IMG_MGMT_DFU_STARTED |
+		    MGMT_EVT_OP_IMG_MGMT_DFU_PENDING |
+		    MGMT_EVT_OP_IMG_MGMT_DFU_STOPPED,
+};
+
+void ota_dfu_hooks_init(void)
+{
+	static bool registered;
+
+	if (!registered) {
+		mgmt_callback_register(&ota_dfu_callback);
+		registered = true;
+	}
 }

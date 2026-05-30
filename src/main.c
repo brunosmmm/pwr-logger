@@ -49,6 +49,7 @@ int main(void)
 	acq_init();
 	ina228_init();
 	ble_stream_init();
+	ota_dfu_hooks_init();   /* mcumgr DFU events -> display + in_progress flag */
 	usb_storage_init();
 	display_init();   /* no-op unless CONFIG_APP_DISPLAY */
 	ui_init();        /* multi-page UI state (no-op without DISPLAY) */

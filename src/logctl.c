@@ -6,6 +6,7 @@
 #include "power.h"
 #include "ble_stream.h"
 #include "display.h"
+#include "ota.h"
 
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
@@ -101,6 +102,16 @@ static void autooff_cancel(void) { k_work_cancel_delayable(&autooff_work); }
 static void autooff_fn(struct k_work *work)
 {
 	ARG_UNUSED(work);
+	/* Inhibit auto-sleep while a BLE OTA upload is in flight. The
+	 * device IS doing useful work (BLE transport is alive, mcumgr
+	 * is writing flash) -- dropping the rail mid-upload would
+	 * suspend the display + SD but BLE keeps running, so the user
+	 * would see a silent "screen off but upload continuing"
+	 * confusion. Re-arm and try again later. */
+	if (ota_in_progress()) {
+		autooff_arm();
+		return;
+	}
 	logctl_post(EV_AUTOOFF);
 }
 
@@ -434,7 +445,24 @@ void logctl_init(void)
 	s_usb = power_usb_present();
 	power_batt_sample();   /* SAADC free before logging starts */
 	LOG_INF("logctl init: USB %s", s_usb ? "present" : "absent");
-	if (config_get()->autostart) {
+
+	/* Don't autostart a recording on the first boot after an OTA
+	 * swap. The previous session was interrupted by the upload + reset
+	 * and the user is actively interacting (they just pushed firmware);
+	 * dropping into LOGGING would clobber whatever they want to do
+	 * next. ota_test_pending() returns true exactly when this boot
+	 * came up unconfirmed (= just-swapped), which gets cleared when
+	 * main() reaches ota_confirm_current() shortly after this call.
+	 * On any subsequent reboot the image is confirmed -> autostart
+	 * works normally. */
+	bool post_ota_boot = ota_test_pending();
+
+	if (post_ota_boot) {
+		LOG_INF("post-OTA boot -> STOPPED (skipping autostart)");
+		if (!s_usb) {
+			logctl_post(EV_USB_OFF);   /* still want idle on battery */
+		}
+	} else if (config_get()->autostart) {
 		logctl_post(EV_LOG_START);
 	} else if (s_usb) {
 		LOG_INF("autostart off -> STOPPED (use 'pwr log' / REC)");

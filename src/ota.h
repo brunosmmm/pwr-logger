@@ -43,4 +43,15 @@ bool ota_test_pending(void);
  * status`. */
 int ota_pending_swap_type(void);
 
+/* True while a BLE mcumgr-SMP image upload is in flight (between
+ * DFU_STARTED and DFU_STOPPED/DFU_PENDING events). Used by logctl to
+ * inhibit the auto-sleep timer so the device doesn't drop into LS_IDLE
+ * mid-upload. Safe to call from any context. */
+bool ota_in_progress(void);
+
+/* Initializes the mcumgr DFU callback so the BLE OTA path drives the
+ * same display indicator as the SD-card path AND sets the in-progress
+ * flag for logctl. Idempotent. */
+void ota_dfu_hooks_init(void);
+
 #endif /* OTA_H_ */
