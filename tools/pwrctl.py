@@ -368,6 +368,322 @@ def ble_dispatch(a):
 
 
 # --------------------------------------------------------------------------- #
+# BLE OTA: SMP-over-BLE image upload + test/confirm + reset
+# --------------------------------------------------------------------------- #
+#
+# Wire protocol: Zephyr mcumgr SMP. Every request/response is an 8-byte
+# header followed by a CBOR-encoded payload map. The same characteristic
+# carries both writes (host -> device) and notifications (device -> host).
+#
+#   Byte 0:   OP (3 bits) | _ (3) | Version (2)
+#               OP: 0=read, 1=read-rsp, 2=write, 3=write-rsp
+#   Byte 1:   Flags (0)
+#   Byte 2-3: BE16 length of CBOR payload that follows
+#   Byte 4-5: BE16 group (img=1, os=0, ...)
+#   Byte 6:   Sequence (matched in response)
+#   Byte 7:   Command ID (img upload=1, os reset=5, ...)
+#
+# A single SMP packet can span multiple BLE writes -- the device
+# reassembles based on the length field. To keep things simple and avoid
+# device-side fragmentation bugs, we size each upload chunk so the whole
+# packet fits in one write of (MTU - 3). Small packets (e.g. reset) are
+# trivially one-write.
+#
+SMP_SVC_UUID  = "8d53dc1d-1db7-4cd3-868b-8a527460aa84"
+SMP_CHAR_UUID = "da2e7828-fbce-4e01-ae9e-261174997c48"
+
+SMP_OP_WRITE     = 2
+SMP_GROUP_OS     = 0
+SMP_GROUP_IMG    = 1
+SMP_ID_OS_RESET  = 5
+SMP_ID_IMG_STATE = 0   # GET/POST image list / test / confirm
+SMP_ID_IMG_UPLOAD = 1
+SMP_ID_IMG_ERASE = 5
+
+
+def smp_pack(op, group, cmd_id, seq, cbor_body):
+    hdr = bytes([
+        (op & 0x07),                 # op + version=0
+        0x00,                        # flags
+        (len(cbor_body) >> 8) & 0xff,
+        len(cbor_body) & 0xff,
+        (group >> 8) & 0xff,
+        group & 0xff,
+        seq & 0xff,
+        cmd_id & 0xff,
+    ])
+    return hdr + cbor_body
+
+
+def smp_unpack(buf):
+    if len(buf) < 8:
+        return None
+    op = buf[0] & 0x07
+    length = (buf[2] << 8) | buf[3]
+    group = (buf[4] << 8) | buf[5]
+    seq = buf[6]
+    cmd_id = buf[7]
+    body = buf[8:8 + length]
+    return op, group, seq, cmd_id, body
+
+
+def cmd_ota(bin_path, *, confirm_now=False, reset=True, mark_only=False):
+    """Push <bin_path> to the device's secondary slot via BLE-SMP, mark for
+    swap, optionally reset. Use the existing mcuboot.test/.confirm semantics:
+    default = TEST (revert if new image doesn't confirm itself); --confirm-now
+    = PERMANENT immediately."""
+    import asyncio
+    import hashlib
+    import os
+
+    import cbor2
+    from bleak import BleakClient, BleakScanner
+
+    data = open(bin_path, "rb").read()
+    sha = hashlib.sha256(data).digest()
+    console.print(f"[cyan]image {os.path.basename(bin_path)} "
+                  f"({len(data)} bytes, sha {sha[:4].hex()}...)[/]")
+
+    async def run():
+        # Find device by advertised local name (matches cmd_monitor / firmware).
+        dev = await BleakScanner.find_device_by_filter(
+            lambda d, adv: adv.local_name == "pwr-logger", timeout=10.0)
+        if not dev:
+            console.print("[red]pwr-logger not found via BLE[/]")
+            return 2
+        console.print(f"[green]connecting[/] {dev.address}")
+
+        async with BleakClient(dev) as cli:
+            # MTU: bleak's `mtu_size` is unreliable across versions
+            # (read-only, may report a default 23 even when BlueZ has
+            # actually negotiated up). The firmware advertises
+            # CONFIG_BT_L2CAP_TX_MTU=247 and BlueZ auto-negotiates ATT
+            # MTU on connect, so we trust the link is high-MTU and pick
+            # a per-write size that fits within MTU-3=244 bytes. If
+            # write_gatt_char rejects, we'll see an actual error from
+            # BlueZ rather than fail silently inside our chunk math.
+            # 200 leaves comfortable headroom and stays well within the
+            # 244-byte ceiling regardless of bleak/BlueZ quirks.
+            payload_max = 200
+            # Per-chunk data size: payload_max - 8 (SMP hdr) - ~80 byte
+            # CBOR overhead (image+off+len+sha+bstr-prefix+map-hdr).
+            chunk_size = max(payload_max - 8 - 80, 64)
+            console.print(f"[dim]payload_max={payload_max} chunk={chunk_size}B[/]")
+
+            # SMP responses are fragmented across notifications when they
+            # exceed the ATT MTU. The fragments arrive in order on the
+            # same characteristic. Keep a single rolling buffer, drain it
+            # of complete SMP packets (8-byte header + body of length
+            # from the header), and dispatch each to its pending future.
+            pending = {}
+            rx_buf = bytearray()
+
+            def on_notify(_h, value):
+                rx_buf.extend(value)
+                while len(rx_buf) >= 8:
+                    body_len = (rx_buf[2] << 8) | rx_buf[3]
+                    total = 8 + body_len
+                    if len(rx_buf) < total:
+                        return                    # wait for more frags
+                    packet = bytes(rx_buf[:total])
+                    del rx_buf[:total]
+                    parsed = smp_unpack(packet)
+                    if not parsed:
+                        continue
+                    op, group, seq, cmd_id, body = parsed
+                    fut = pending.pop(seq, None)
+                    if fut and not fut.done():
+                        fut.set_result((op, group, cmd_id, body))
+
+            # Register the notify handler exactly once. (Earlier versions
+            # of this code did a start/stop/start dance to "upgrade" from
+            # a placeholder lambda to on_notify; on some BlueZ versions
+            # that second start_notify silently lost the notification
+            # subscription and every request timed out.)
+            await cli.start_notify(SMP_CHAR_UUID, on_notify)
+
+            loop = asyncio.get_running_loop()
+            seq = 0
+
+            async def request(op, group, cmd_id, payload, timeout=15.0):
+                nonlocal seq
+                this_seq = seq
+                seq = (seq + 1) & 0xff
+                body = cbor2.dumps(payload)
+                packet = smp_pack(op, group, cmd_id, this_seq, body)
+                fut = loop.create_future()
+                pending[this_seq] = fut
+                # SMP supports fragmented writes; for simplicity insist that
+                # the whole packet fits in one write at the current MTU.
+                if len(packet) > payload_max:
+                    # Fall back to fragmented writes (split at byte boundary;
+                    # the device reassembles by length).
+                    for i in range(0, len(packet), payload_max):
+                        await cli.write_gatt_char(
+                            SMP_CHAR_UUID, packet[i:i + payload_max],
+                            response=False)
+                else:
+                    await cli.write_gatt_char(
+                        SMP_CHAR_UUID, packet, response=False)
+                try:
+                    op_r, _g, _id, rbody = await asyncio.wait_for(
+                        fut, timeout=timeout)
+                except asyncio.TimeoutError:
+                    pending.pop(this_seq, None)
+                    raise
+                if not rbody:
+                    return {}
+                return cbor2.loads(rbody)
+
+            # ---- inspect slot state ----
+            console.print("[cyan]image list (before)...[/]")
+            slot1_hash_before = None
+            try:
+                ls = await request(0, SMP_GROUP_IMG, SMP_ID_IMG_STATE,
+                                   {}, timeout=10.0)
+                images = ls.get("images", []) if isinstance(ls, dict) else []
+                for im in images:
+                    flags = []
+                    for k in ("active", "confirmed", "pending", "permanent", "bootable"):
+                        if im.get(k):
+                            flags.append(k)
+                    h = im.get("hash", b"")
+                    console.print(
+                        f"  slot={im.get('slot')}  v={im.get('version','?')}  "
+                        f"sha={h[:4].hex() if h else '-'}  [{','.join(flags) or '-'}]"
+                    )
+                    if im.get("slot") == 1 and h:
+                        slot1_hash_before = h
+            except Exception as e:
+                console.print(f"[yellow]image list: {type(e).__name__}: {e}[/]")
+
+            if mark_only:
+                if not slot1_hash_before:
+                    console.print("[red]--mark: slot 1 empty, nothing to mark[/]")
+                    return 9
+                console.print("[cyan]marking slot 1 for swap (using existing image)...[/]")
+                mark_payload = {"hash": slot1_hash_before,
+                                "confirm": bool(confirm_now)}
+                mark_resp = await request(SMP_OP_WRITE, SMP_GROUP_IMG,
+                                          SMP_ID_IMG_STATE, mark_payload)
+                console.print(f"[dim]mark response: {mark_resp}[/]")
+                rc = mark_resp.get("rc") if isinstance(mark_resp, dict) else None
+                if isinstance(rc, int) and rc != 0:
+                    console.print(f"[red]mark error rc={rc}[/]")
+                    return 4
+                mode = "PERMANENT" if confirm_now else "TEST"
+                console.print(f"[green]marked as {mode}[/]")
+                if reset:
+                    console.print("[cyan]resetting...[/]")
+                    try:
+                        await request(SMP_OP_WRITE, SMP_GROUP_OS,
+                                      SMP_ID_OS_RESET, {}, timeout=2.0)
+                    except asyncio.TimeoutError:
+                        pass
+                    console.print("[green]reset issued -- swap on boot[/]")
+                return 0
+
+            # NOTE: no explicit erase. The firmware has
+            # CONFIG_IMG_ERASE_PROGRESSIVELY=y, so the upload below
+            # erases each flash page just before writing it. The
+            # one-shot erase command is broken on this device: the
+            # ~5 s of blocking flash work exceeds the BT supervision
+            # timeout (CONFIG_BT_PERIPHERAL_PREF_TIMEOUT=42 = 420 ms),
+            # so the link drops before the response can come back.
+
+            # ---- upload ----
+            total = len(data)
+            off = 0
+            t0 = time.monotonic()
+            console.print("[cyan]uploading...[/]")
+            while off < total:
+                this = min(chunk_size, total - off)
+                payload = {
+                    "off": off,
+                    "data": data[off:off + this],
+                }
+                if off == 0:
+                    payload["image"] = 0
+                    payload["len"] = total
+                    payload["sha"] = sha
+                resp = await request(SMP_OP_WRITE, SMP_GROUP_IMG,
+                                     SMP_ID_IMG_UPLOAD, payload,
+                                     timeout=20.0)
+                if isinstance(resp.get("rc"), int) and resp["rc"] != 0:
+                    console.print(f"[red]upload error rc={resp['rc']} at off={off}[/]")
+                    return 3
+                next_off = resp.get("off", off + this)
+                off = next_off
+                pct = (off * 100) // total
+                rate = off / (time.monotonic() - t0 + 1e-9) / 1024
+                console.print(
+                    f"  {off:>7d}/{total} ({pct:3d}%) {rate:6.1f} KB/s",
+                    end="\r", highlight=False)
+            console.print()
+            elapsed = time.monotonic() - t0
+            console.print(f"[green]upload done[/] in {elapsed:.1f} s "
+                          f"({total/elapsed/1024:.1f} KB/s)")
+
+            # ---- look up slot 1's hash for the mark ----
+            # MCUboot identifies images by the SHA-256 TLV embedded in the
+            # image header trailer, NOT the SHA of the .bin file we
+            # uploaded. Ask the device for the hash it actually computed
+            # for slot 1, then use that for the test/confirm request.
+            console.print("[cyan]image list (after upload)...[/]")
+            slot1_hash = None
+            try:
+                ls = await request(0, SMP_GROUP_IMG, SMP_ID_IMG_STATE,
+                                   {}, timeout=10.0)
+                for im in ls.get("images", []) if isinstance(ls, dict) else []:
+                    h = im.get("hash", b"")
+                    flags = [k for k in ("active", "confirmed", "pending",
+                                         "permanent", "bootable") if im.get(k)]
+                    console.print(
+                        f"  slot={im.get('slot')}  v={im.get('version','?')}  "
+                        f"sha={h[:4].hex() if h else '-'}  [{','.join(flags) or '-'}]")
+                    if im.get("slot") == 1 and h:
+                        slot1_hash = h
+            except Exception as e:
+                console.print(f"[red]image list (after): {type(e).__name__}: {e}"
+                              f" -- can't mark without hash[/]")
+                return 7
+
+            if not slot1_hash:
+                console.print("[red]slot 1 hash not reported -- upload may have failed silently[/]")
+                return 8
+
+            # ---- mark for swap ----
+            console.print("[cyan]marking for swap...[/]")
+            mark_payload = {"hash": slot1_hash, "confirm": bool(confirm_now)}
+            mark_resp = await request(SMP_OP_WRITE, SMP_GROUP_IMG,
+                                      SMP_ID_IMG_STATE, mark_payload)
+            console.print(f"[dim]mark response: {mark_resp}[/]")
+            if isinstance(mark_resp.get("rc"), int) and mark_resp["rc"] != 0:
+                console.print(f"[red]mark error rc={mark_resp['rc']}[/]")
+                return 4
+            mode = "PERMANENT" if confirm_now else "TEST (will revert unless image confirms)"
+            console.print(f"[green]marked as {mode}[/]")
+
+            # ---- reset ----
+            if reset:
+                console.print("[cyan]resetting...[/]")
+                try:
+                    await request(SMP_OP_WRITE, SMP_GROUP_OS,
+                                  SMP_ID_OS_RESET, {}, timeout=2.0)
+                except asyncio.TimeoutError:
+                    # Reset response is best-effort; the device may not get
+                    # a chance to send it before reboot. That's normal.
+                    pass
+                console.print("[green]reset issued -- device will swap on boot[/]")
+
+        return 0
+
+    rc = asyncio.run(run())
+    if rc:
+        sys.exit(rc)
+
+
+# --------------------------------------------------------------------------- #
 def main():
     ap = argparse.ArgumentParser(prog="pwrctl", description="pwr-logger host CLI")
     ap.add_argument("--port", help="serial port (default: auto-detect 2fe3:0006)")
@@ -387,10 +703,25 @@ def main():
     cp.add_argument("value", nargs="?")
     sub.add_parser("monitor")
 
+    op = sub.add_parser("ota", help="push a signed .bin firmware over BLE-SMP")
+    op.add_argument("bin", help="path to zephyr.signed.bin")
+    op.add_argument("--confirm-now", action="store_true",
+                    help="mark as PERMANENT (no revert) instead of TEST")
+    op.add_argument("--no-reset", action="store_true",
+                    help="skip the post-upload reset (leave pending swap)")
+    op.add_argument("--mark", action="store_true",
+                    help="skip erase+upload; mark whatever is already in slot 1 "
+                         "(diagnostic; use when a prior upload landed but mark "
+                         "failed)")
+
     a = ap.parse_args()
 
     if a.cmd == "monitor":
         cmd_monitor()
+        return
+    if a.cmd == "ota":
+        cmd_ota(a.bin, confirm_now=a.confirm_now, reset=not a.no_reset,
+                mark_only=a.mark)
         return
     if a.ble:
         ble_dispatch(a)
