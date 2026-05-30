@@ -583,12 +583,18 @@ def cmd_ota(bin_path, *, confirm_now=False, reset=True, mark_only=False,
                     return {}
                 return cbor2.loads(rbody)
 
-            # ---- inspect slot state ----
+            # ---- inspect slot state (raw dump for debugging) ----
             console.print("[cyan]image list (before)...[/]")
             slot1_hash_before = None
             try:
                 ls = await request(0, SMP_GROUP_IMG, SMP_ID_IMG_STATE,
                                    {}, timeout=10.0)
+                # Raw dump first -- we've been getting NO_FREE_SLOT errors
+                # that contradict our reading of the slot flags, so print
+                # the whole response so we can see exactly what MCUboot is
+                # reporting (active/confirmed/pending/permanent/bootable
+                # per slot, splitStatus, anything else).
+                console.print(f"[dim]raw: {ls}[/]")
                 images = ls.get("images", []) if isinstance(ls, dict) else []
                 for im in images:
                     flags = []
