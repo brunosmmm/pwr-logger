@@ -49,6 +49,7 @@ class Op(IntEnum):
     OFFLOAD = 0x04
     RESUME = 0x05
     POWEROFF = 0x06
+    KEEPALIVE = 0x07
     SETTIME = 0x10
 
 
@@ -365,6 +366,44 @@ def ble_dispatch(a):
     else:
         console.print(f"[yellow]'{a.cmd}' isn't available over BLE — use serial, "
                       f"or 'pwrctl monitor' for live state/battery.[/]")
+
+
+# --------------------------------------------------------------------------- #
+# BLE keepalive: hold a connection open and ping at <interval> seconds
+# --------------------------------------------------------------------------- #
+def cmd_keepalive(interval):
+    """Ping the device's keepalive opcode forever; defers auto-sleep on the
+    device side so a long-running calibration / debug / monitor session
+    can keep the device awake without flipping the autooff config.
+
+    One persistent BLE connection (cheaper than reopen-per-ping), one
+    write_gatt_char per interval. Ctrl-C to exit."""
+    import asyncio
+    from bleak import BleakClient, BleakScanner
+
+    async def run():
+        dev = await BleakScanner.find_device_by_filter(
+            lambda d, adv: adv.local_name == "pwr-logger", timeout=15.0)
+        if not dev:
+            console.print("[red]pwr-logger not found over BLE[/]")
+            return 2
+        console.print(f"[green]connected[/] {dev.address}; "
+                      f"pinging keepalive every {interval} s. Ctrl-C to stop.")
+        try:
+            async with BleakClient(dev) as c:
+                while True:
+                    await c.write_gatt_char(CTRL_UUID,
+                                            bytes([Op.KEEPALIVE]),
+                                            response=False)
+                    console.print(f"[dim]ping {time.strftime('%H:%M:%S')}[/]")
+                    await asyncio.sleep(interval)
+        except (asyncio.CancelledError, KeyboardInterrupt):
+            return 0
+
+    try:
+        asyncio.run(run())
+    except KeyboardInterrupt:
+        pass
 
 
 # --------------------------------------------------------------------------- #
@@ -703,6 +742,13 @@ def main():
     cp.add_argument("value", nargs="?")
     sub.add_parser("monitor")
 
+    kap = sub.add_parser("keepalive",
+                         help="hold a BLE connection open and ping the device's "
+                              "keepalive opcode every <interval> s, deferring "
+                              "auto-sleep for as long as the loop runs")
+    kap.add_argument("--interval", type=float, default=15.0,
+                     help="seconds between pings (default 15)")
+
     op = sub.add_parser("ota", help="push a signed .bin firmware over BLE-SMP")
     op.add_argument("bin", help="path to zephyr.signed.bin")
     op.add_argument("--confirm-now", action="store_true",
@@ -718,6 +764,9 @@ def main():
 
     if a.cmd == "monitor":
         cmd_monitor()
+        return
+    if a.cmd == "keepalive":
+        cmd_keepalive(a.interval)
         return
     if a.cmd == "ota":
         cmd_ota(a.bin, confirm_now=a.confirm_now, reset=not a.no_reset,

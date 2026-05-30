@@ -109,6 +109,14 @@ static int cmd_poweroff(const struct shell *sh, size_t argc, char **argv)
 	return 0;
 }
 
+static int cmd_keepalive(const struct shell *sh, size_t argc, char **argv)
+{
+	ARG_UNUSED(argc); ARG_UNUSED(argv);
+	logctl_keepalive();
+	shell_print(sh, "keepalive: autooff timer re-armed");
+	return 0;
+}
+
 static int cmd_lowbatt(const struct shell *sh, size_t argc, char **argv)
 {
 	ARG_UNUSED(argc); ARG_UNUSED(argv);
@@ -772,6 +780,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(pwr_sub,
 	SHELL_CMD(resume,   NULL, "leave offload, resume logging", cmd_resume),
 	SHELL_CMD(poweroff, NULL, "clean stop + power off", cmd_poweroff),
 	SHELL_CMD(reboot,   NULL, "cold reset (triggers pending MCUboot swap/revert)", cmd_reboot),
+	SHELL_CMD(keepalive, NULL, "re-arm the auto-sleep timer (ping periodically to stay awake)", cmd_keepalive),
 	SHELL_CMD(batt,     NULL, "battery (VDDH) voltage", cmd_batt),
 	SHELL_CMD(lowbatt,  NULL, "simulate low-battery event (test)", cmd_lowbatt),
 	SHELL_CMD(usb,      NULL, "simulate VBUS on/off (test)", cmd_usb),

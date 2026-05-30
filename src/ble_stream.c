@@ -31,8 +31,9 @@ static const struct bt_uuid_128 ctrl_uuid = BT_UUID_INIT_128(PWR_CTRL_UUID);
 #define PWR_OP_ROTATE   0x03
 #define PWR_OP_OFFLOAD  0x04
 #define PWR_OP_RESUME   0x05
-#define PWR_OP_POWEROFF 0x06
-#define PWR_OP_SETTIME  0x10   /* + u32 LE unix epoch */
+#define PWR_OP_POWEROFF  0x06
+#define PWR_OP_KEEPALIVE 0x07   /* defer auto-sleep; ping periodically */
+#define PWR_OP_SETTIME   0x10   /* + u32 LE unix epoch */
 
 /* Tagged telemetry records (little-endian, packed). First byte is the type. */
 #define TLM_FAST   0x01
@@ -106,6 +107,7 @@ static ssize_t ctrl_write(struct bt_conn *conn, const struct bt_gatt_attr *attr,
 	case PWR_OP_OFFLOAD:  logctl_post(EV_OFFLOAD_ON);  break;
 	case PWR_OP_RESUME:   logctl_post(EV_OFFLOAD_OFF); break;
 	case PWR_OP_POWEROFF: logctl_post(EV_POWEROFF);    break;
+	case PWR_OP_KEEPALIVE: logctl_keepalive();          break;
 	case PWR_OP_SETTIME:
 		if (len >= 5) {
 			uint32_t epoch;

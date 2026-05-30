@@ -99,6 +99,18 @@ static void autooff_arm(void)
 }
 static void autooff_cancel(void) { k_work_cancel_delayable(&autooff_work); }
 
+void logctl_keepalive(void)
+{
+	/* Only meaningful in states where the autooff timer can actually
+	 * be armed (battery-side STOPPED/IDLE). Cheap no-op otherwise so
+	 * callers don't need to gate their own pings. Cancel + re-arm
+	 * gives a full fresh window from "now". */
+	if (logctl_state() == LS_STOPPED || logctl_state() == LS_IDLE) {
+		autooff_cancel();
+		autooff_arm();
+	}
+}
+
 static void autooff_fn(struct k_work *work)
 {
 	ARG_UNUSED(work);

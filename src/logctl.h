@@ -36,4 +36,12 @@ int  logctl_post(enum logctl_event ev);  /* ISR-safe; queues an event           
 enum logctl_state logctl_state(void);
 const char *logctl_state_name(enum logctl_state s);
 
+/* "I'm still here -- defer auto-sleep." Cancels the in-flight autooff
+ * timer and re-arms it for another full window. Use this from any
+ * long-running interactive workflow (BLE host actively talking,
+ * shell-driven calibration session, etc.) where the operator wants
+ * the device to stay alive without flipping autooff config off. Safe
+ * from any context. */
+void logctl_keepalive(void);
+
 #endif /* LOGCTL_H_ */
