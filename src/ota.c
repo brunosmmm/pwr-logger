@@ -342,14 +342,16 @@ int ota_begin(enum ota_source src, const char *banner)
 		display_notice(banner, 120000);
 	}
 
+	/* Ask logctl to stop the logger if it's running. Non-blocking on
+	 * purpose: this function may be called from the mcumgr DFU
+	 * callback context while the host is waiting for a response to
+	 * the first upload chunk. Blocking here pushed past the BLE
+	 * supervision timeout and tanked the upload. logctl will process
+	 * EV_LOG_STOP within a few ms anyway -- well before any flash
+	 * writes happen, and there's no actual race because the OTA path
+	 * touches internal flash while the logger touches SD. */
 	if (logctl_state() == LS_LOGGING) {
 		logctl_post(EV_LOG_STOP);
-		for (int i = 0; i < 200; i++) {
-			if (logctl_state() != LS_LOGGING) {
-				break;
-			}
-			k_sleep(K_MSEC(10));
-		}
 	}
 
 	phase_set(OTA_TRANSFERRING);
