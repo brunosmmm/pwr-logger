@@ -4,6 +4,7 @@
 #include "power.h"
 #include "acquisition.h"
 #include "app_config.h"
+#include "config.h"
 
 #include <zephyr/kernel.h>
 #include <zephyr/bluetooth/bluetooth.h>
@@ -147,6 +148,34 @@ static const struct bt_data ad[] = {
 
 static bool s_adv;
 
+/* Build a slow-adv parameter tuned for "device may be discoverable but
+ * is not actively expected to be used right now" (LS_IDLE with
+ * idle_ble=true, or LS_STOPPED on battery once the autooff grace window
+ * elapses). Uses cfg.adv_idle_ms for the interval. Connectable so the
+ * operator can still wake / interact -- just at a fraction of the FAST_1
+ * radio duty cycle. */
+static int start_adv_slow(void)
+{
+	uint32_t ms = config_get()->adv_idle_ms;
+
+	if (ms < 100) {
+		ms = 1000;        /* sanity default */
+	}
+	uint16_t units = (uint16_t)((ms * 8) / 5);   /* ms -> 0.625 ms units */
+	struct bt_le_adv_param p = BT_LE_ADV_PARAM_INIT(
+		BT_LE_ADV_OPT_CONN, units, units + 80, NULL);
+
+	int err = bt_le_adv_start(&p, ad, ARRAY_SIZE(ad), NULL, 0);
+
+	if (err) {
+		LOG_ERR("adv (slow) start -> %d", err);
+	} else {
+		s_adv = true;
+		LOG_INF("BLE advertising slow (~%u ms)", ms);
+	}
+	return err;
+}
+
 static int start_adv(void)
 {
 	int err = bt_le_adv_start(BT_LE_ADV_CONN_FAST_1, ad, ARRAY_SIZE(ad), NULL, 0);
@@ -155,7 +184,7 @@ static int start_adv(void)
 		LOG_ERR("adv start -> %d", err);
 	} else {
 		s_adv = true;
-		LOG_INF("BLE advertising as '%s'", CONFIG_BT_DEVICE_NAME);
+		LOG_INF("BLE advertising as '%s' (fast)", CONFIG_BT_DEVICE_NAME);
 	}
 	return err;
 }
@@ -163,17 +192,29 @@ static int start_adv(void)
 void ble_stream_set_adv(bool on)
 {
 	if (on && !s_adv) {
-		(void)start_adv();
+		/* Pick fast vs slow interval based on what the operator is
+		 * doing right now: any state other than LS_IDLE means active
+		 * use -> fast adv; LS_IDLE with idle_ble means "I want to be
+		 * reachable but I'm on battery" -> slow adv. */
+		if (logctl_state() == LS_IDLE) {
+			(void)start_adv_slow();
+		} else {
+			(void)start_adv();
+		}
 	} else if (!on && s_adv) {
 		(void)bt_le_adv_stop();
 		s_adv = false;
-		LOG_INF("BLE advertising stopped (idle)");
+		LOG_INF("BLE advertising stopped");
 	}
 }
 
-/* Want ~15-30 ms so the link can carry the ~20 Hz aggregate window stream
- * (BlueZ otherwise picks ~67 ms, which caps notifications at ~15 Hz). */
-static const struct bt_le_conn_param fast_conn = BT_LE_CONN_PARAM_INIT(0x000c, 0x0018, 0, 400);
+/* Want ~15-30 ms so the link can carry the ~20 Hz aggregate window
+ * stream (BlueZ otherwise picks ~67 ms, which caps notifications at
+ * ~15 Hz). 4th arg is supervision timeout in 10 ms units: 1000 = 10 s,
+ * matching CONFIG_BT_PERIPHERAL_PREF_TIMEOUT=1000 so long synchronous
+ * flash ops (mcumgr image_erase ~5 s) don't drop the link. The earlier
+ * value of 400 (4 s) overrode the bumped PPCP for the actual link. */
+static const struct bt_le_conn_param fast_conn = BT_LE_CONN_PARAM_INIT(0x000c, 0x0018, 0, 1000);
 
 static void connected(struct bt_conn *conn, uint8_t err)
 {
@@ -213,6 +254,16 @@ static K_WORK_DEFINE(adv_work, adv_work_handler);
 static void disconnected(struct bt_conn *conn, uint8_t reason)
 {
 	ARG_UNUSED(conn);
+	/* If we're in LS_IDLE and idle_ble is off, do NOT restart
+	 * advertising. The earlier unconditional restart was the cause of
+	 * "device says it's sleeping but BLE keeps responding" -- after
+	 * any prior connection, FAST_1 adv stayed on in idle forever. */
+	if (logctl_state() == LS_IDLE && !config_get()->idle_ble) {
+		LOG_INF("disconnected (0x%02x); idle + idle_ble=off -> not re-advertising",
+			reason);
+		s_subscribed = false;
+		return;
+	}
 	LOG_INF("disconnected (0x%02x); re-advertising", reason);
 	s_subscribed = false;
 	k_work_submit(&adv_work);
@@ -229,6 +280,16 @@ BT_CONN_CB_DEFINE(conn_cbs) = {
  * (n = 0 marks "no fast-channel data"). Suppressed while logging publishes flow. */
 static void hb_fn(struct k_work *work);
 static K_WORK_DELAYABLE_DEFINE(hb_work, hb_fn);
+
+void ble_stream_pause_hb(void)
+{
+	k_work_cancel_delayable(&hb_work);
+}
+
+void ble_stream_resume_hb(void)
+{
+	k_work_schedule(&hb_work, K_MSEC(500));
+}
 
 static void hb_fn(struct k_work *work)
 {

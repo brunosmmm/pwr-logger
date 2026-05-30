@@ -19,4 +19,12 @@ int ble_stream_publish_slow(const struct ina228_sample *s);  /* SLOW (INA228) */
 void ble_stream_set_adv(bool on);   /* start/stop advertising (off in dark idle) */
 bool ble_stream_subscribed(void);   /* central is connected + subscribed to NOTIFY */
 
+/* Pause / resume the 2 Hz status heartbeat work. The heartbeat sends
+ * status + battery to a connected central whenever the aggregate
+ * stream isn't already publishing -- useful for STOPPED, useless in
+ * LS_IDLE (rail off, can't sample, no central likely there). Pause
+ * frees ~0.5 ms of CPU per second + avoids waking sysworkq. */
+void ble_stream_pause_hb(void);
+void ble_stream_resume_hb(void);
+
 #endif /* BLE_STREAM_H_ */
