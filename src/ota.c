@@ -35,6 +35,8 @@
 #include <zephyr/sys/atomic.h>
 #include <zephyr/mgmt/mcumgr/mgmt/callbacks.h>
 #include <zephyr/mgmt/mcumgr/grp/img_mgmt/img_mgmt_callbacks.h>
+#include <zephyr/logging/log.h>
+#include <hal/nrf_power.h>
 
 #include "ota.h"
 #include "storage.h"
@@ -239,11 +241,93 @@ int ota_apply_from_sd(ota_progress_cb_t cb, void *user)
 	return 0;
 }
 
+/* Page-by-page erase of slot 1, ridden on sysworkq so the device stays
+ * responsive (BLE, display, USB) during the ~5 s of total flash work.
+ * Each fire erases one 4 KB page (~85 ms NVMC blocking) then reschedules
+ * itself. WDT keeps getting fed by its own 1 s sysworkq job between
+ * pages. Watchdog also fed inline from this work for extra safety.
+ *
+ * Why we erase: after a successful swap-and-confirm, slot 1 holds the
+ * prior confirmed image with `image_ok=SET` in its trailer.
+ * mcuboot_swap_type_multi() reads that as BOOT_SWAP_TYPE_PERM, so on the
+ * next BLE upload mcumgr's slot_in_use(1) returns 1 -> NO_FREE_SLOT
+ * (rc=9). Scrubbing slot 1 here makes it report as empty by the time
+ * the next OTA arrives. */
+#define PAGE_SIZE 4096
+
+static struct k_work_delayable s_slot1_erase_work;
+static const struct flash_area *s_slot1_fa;
+static size_t s_slot1_erase_off;
+
+static void slot1_erase_work_fn(struct k_work *w)
+{
+	ARG_UNUSED(w);
+
+	if (s_slot1_fa == NULL) {
+		return;
+	}
+	if (s_slot1_erase_off >= s_slot1_fa->fa_size) {
+		flash_area_close(s_slot1_fa);
+		s_slot1_fa = NULL;
+		return;
+	}
+	int rc = flash_area_erase(s_slot1_fa, s_slot1_erase_off, PAGE_SIZE);
+
+	if (rc != 0) {
+		/* Best-effort: abort the cleanup but leave the device working. */
+		flash_area_close(s_slot1_fa);
+		s_slot1_fa = NULL;
+		return;
+	}
+	s_slot1_erase_off += PAGE_SIZE;
+	wdt_feed_now();
+	/* Yield a bit so sysworkq drains other items (incl. wdt feed). */
+	k_work_schedule(&s_slot1_erase_work, K_MSEC(10));
+}
+
+static void slot1_clean_async(void)
+{
+	if (s_slot1_fa != NULL) {
+		return;     /* already in progress */
+	}
+	if (flash_area_open(FIXED_PARTITION_ID(slot1_partition),
+			    &s_slot1_fa) != 0) {
+		s_slot1_fa = NULL;
+		return;
+	}
+	s_slot1_erase_off = 0;
+	k_work_init_delayable(&s_slot1_erase_work, slot1_erase_work_fn);
+	k_work_schedule(&s_slot1_erase_work, K_MSEC(10));
+}
+
 void ota_confirm_current(void)
 {
-	if (!boot_is_img_confirmed()) {
-		(void)boot_write_img_confirmed();
+	if (boot_is_img_confirmed()) {
+		return;
 	}
+
+	/* Erratum 242: soc_flash_nrf returns -ECANCELED on every write while
+	 * POFWARN is latched. Clear it first so the confirm actually lands.
+	 * Same dance as config_save (). */
+	nrf_power_event_clear(NRF_POWER, NRF_POWER_EVENT_POFWARN);
+
+	int rc = boot_write_img_confirmed();
+
+	if (rc != 0) {
+		/* Try once more after re-clearing POFWARN; if it still fails
+		 * we'd boot-loop on revert next reset and that's actually
+		 * fine (MCUboot does its job). Log it loud so a future debug
+		 * build catches it. */
+		nrf_power_event_clear(NRF_POWER, NRF_POWER_EVENT_POFWARN);
+		rc = boot_write_img_confirmed();
+	}
+	if (rc != 0) {
+		return;     /* slot 1 erase is meaningless if confirm failed */
+	}
+
+	/* Confirm OK: scrub slot 1 in the background so the next OTA upload
+	 * doesn't hit NO_FREE_SLOT against the displaced prior image. */
+	slot1_clean_async();
 }
 
 bool ota_test_pending(void)
