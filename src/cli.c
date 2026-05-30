@@ -711,6 +711,9 @@ static int cmd_ota_status(const struct shell *sh, size_t argc, char **argv)
 		    ota_test_pending() ? "UNCONFIRMED (will revert on next reset)" :
 					 "confirmed");
 	shell_print(sh, "pending swap:   %s", ota_swap_str(ota_pending_swap_type()));
+	shell_print(sh, "ota phase:      %s (source=%s)",
+		    ota_phase_name(ota_phase_get()),
+		    ota_source_name(ota_source_get()));
 	shell_print(sh, "update file:    %s", OTA_FILE_PATH);
 	return 0;
 }

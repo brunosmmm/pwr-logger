@@ -75,21 +75,29 @@ int ota_apply_from_sd(ota_progress_cb_t cb, void *user)
 {
 #define REPORT(stage, val)  do { if (cb) cb(stage, (val), user); } while (0)
 
-	/* Put device in OTA-safe state first: stop logger if running so
-	 * we don't have SD writes racing with our internal flash writes,
-	 * set in_progress flag, show banner. Symmetric with BLE OTA. */
-	ota_enter_safe_state("SD OTA");
+	/* Drive the unified state machine: PREPARING (stop logger, banner),
+	 * then TRANSFERRING for the streaming loop, MARKING after the last
+	 * chunk, REBOOTING right before sys_reboot. BLE OTA goes through
+	 * the same transitions via the DFU notification callbacks. */
+	int rc = ota_begin(OTA_SRC_SD, "SD OTA");
+
+	if (rc != 0) {
+		/* Another OTA already in flight. Refuse. */
+		return rc;
+	}
 
 	bool we_mounted = (storage_mount() == 0);
 
 	struct fs_dirent ent;
-	int rc = fs_stat(OTA_FILE_PATH, &ent);
+
+	rc = fs_stat(OTA_FILE_PATH, &ent);
 
 	REPORT("stat", rc);
 	if (rc != 0 || ent.type != FS_DIR_ENTRY_FILE) {
 		if (we_mounted) {
 			(void)storage_unmount();
 		}
+		ota_end_failure();
 		return (rc != 0) ? rc : -ENOENT;
 	}
 
@@ -99,6 +107,7 @@ int ota_apply_from_sd(ota_progress_cb_t cb, void *user)
 		if (we_mounted) {
 			(void)storage_unmount();
 		}
+		ota_end_failure();
 		return -EINVAL;
 	}
 
@@ -106,6 +115,7 @@ int ota_apply_from_sd(ota_progress_cb_t cb, void *user)
 		if (we_mounted) {
 			(void)storage_unmount();
 		}
+		ota_end_failure();
 		return -E2BIG;
 	}
 
@@ -118,6 +128,7 @@ int ota_apply_from_sd(ota_progress_cb_t cb, void *user)
 		if (we_mounted) {
 			(void)storage_unmount();
 		}
+		ota_end_failure();
 		return rc;
 	}
 
@@ -130,6 +141,7 @@ int ota_apply_from_sd(ota_progress_cb_t cb, void *user)
 		if (we_mounted) {
 			(void)storage_unmount();
 		}
+		ota_end_failure();
 		return rc;
 	}
 
@@ -149,6 +161,7 @@ int ota_apply_from_sd(ota_progress_cb_t cb, void *user)
 			if (we_mounted) {
 				(void)storage_unmount();
 			}
+			ota_end_failure();
 			return (n == 0) ? -EIO : (int)n;
 		}
 
@@ -161,6 +174,7 @@ int ota_apply_from_sd(ota_progress_cb_t cb, void *user)
 			if (we_mounted) {
 				(void)storage_unmount();
 			}
+			ota_end_failure();
 			return rc;
 		}
 
@@ -185,6 +199,9 @@ int ota_apply_from_sd(ota_progress_cb_t cb, void *user)
 
 	(void)fs_close(&fp);
 
+	/* Phase: MARKING (test trailer write). */
+	ota_mark_start();
+
 	/* Mark for TEST swap on next reset. boot_request_upgrade(0) =
 	 * TEST (revert-on-no-confirm); (1) = PERMANENT. Always go via
 	 * TEST so a broken payload reverts on its own. */
@@ -194,6 +211,7 @@ int ota_apply_from_sd(ota_progress_cb_t cb, void *user)
 		if (we_mounted) {
 			(void)storage_unmount();
 		}
+		ota_end_failure();
 		return rc;
 	}
 
@@ -201,6 +219,8 @@ int ota_apply_from_sd(ota_progress_cb_t cb, void *user)
 	(void)fs_rename(OTA_FILE_PATH, OTA_APPLIED_PATH);
 	REPORT("rename", 0);
 
+	/* Phase: REBOOTING. */
+	ota_reboot_start();
 	ota_show("OTA reboot");
 
 	if (we_mounted) {
@@ -254,24 +274,74 @@ int ota_pending_swap_type(void)
  * authorise/deny based on app state -- just observe + indicate.
  */
 
-static atomic_t s_ota_in_progress;
+/* Unified OTA state machine -- both BLE-mcumgr and SD-card paths feed
+ * transitions in here so the rest of the device sees one consistent
+ * view. The atomics are sufficient locking; we don't need a mutex
+ * because phase transitions are short and self-consistent. */
+static atomic_t s_phase  = ATOMIC_INIT(OTA_IDLE);
+static atomic_t s_source = ATOMIC_INIT(OTA_SRC_NONE);
 
+enum ota_phase  ota_phase_get(void)  { return (enum ota_phase)atomic_get(&s_phase); }
+enum ota_source ota_source_get(void) { return (enum ota_source)atomic_get(&s_source); }
 bool ota_in_progress(void)
 {
-	return atomic_get(&s_ota_in_progress) != 0;
+	enum ota_phase p = ota_phase_get();
+
+	return p != OTA_IDLE && p != OTA_FAILED;
 }
 
-void ota_enter_safe_state(const char *banner)
+const char *ota_phase_name(enum ota_phase p)
 {
-	atomic_set(&s_ota_in_progress, 1);
+	switch (p) {
+	case OTA_IDLE:         return "idle";
+	case OTA_PREPARING:    return "preparing";
+	case OTA_TRANSFERRING: return "transferring";
+	case OTA_MARKING:      return "marking";
+	case OTA_REBOOTING:    return "rebooting";
+	case OTA_FAILED:       return "failed";
+	default:               return "?";
+	}
+}
+
+const char *ota_source_name(enum ota_source s)
+{
+	switch (s) {
+	case OTA_SRC_NONE: return "-";
+	case OTA_SRC_BLE:  return "ble";
+	case OTA_SRC_SD:   return "sd";
+	default:           return "?";
+	}
+}
+
+static void phase_set(enum ota_phase p)
+{
+	atomic_set(&s_phase, (atomic_val_t)p);
+}
+
+static void source_set(enum ota_source s)
+{
+	atomic_set(&s_source, (atomic_val_t)s);
+}
+
+/* Common prep for any OTA path:
+ *   - Refuse if another OTA is already in flight (returns -EBUSY).
+ *   - Set source + phase = PREPARING.
+ *   - Banner the display.
+ *   - Stop the logger cleanly so SD writes don't race with the
+ *     upcoming internal-flash writes.
+ *   - Transition to TRANSFERRING when done.
+ */
+int ota_begin(enum ota_source src, const char *banner)
+{
+	if (ota_in_progress()) {
+		return -EBUSY;
+	}
+	source_set(src);
+	phase_set(OTA_PREPARING);
 	if (banner) {
 		display_notice(banner, 120000);
 	}
 
-	/* If logging, ask logctl to cleanly stop it. Posting an event is
-	 * safe from any context (it's a msgq write). Wait briefly for the
-	 * logctl thread to process it so we don't race with concurrent SD
-	 * writes once the OTA starts touching internal flash. */
 	if (logctl_state() == LS_LOGGING) {
 		logctl_post(EV_LOG_STOP);
 		for (int i = 0; i < 200; i++) {
@@ -281,13 +351,35 @@ void ota_enter_safe_state(const char *banner)
 			k_sleep(K_MSEC(10));
 		}
 	}
+
+	phase_set(OTA_TRANSFERRING);
+	return 0;
 }
 
-void ota_exit_safe_state(void)
+void ota_mark_start(void)   { phase_set(OTA_MARKING); }
+void ota_reboot_start(void) { phase_set(OTA_REBOOTING); }
+
+void ota_end_success(void)
 {
-	atomic_set(&s_ota_in_progress, 0);
+	/* Stays at REBOOTING -- sys_reboot is about to fire. Don't reset
+	 * phase to IDLE: a brief window of "actually it's done" before
+	 * the chip resets would be misleading. */
+}
+
+void ota_end_failure(void)
+{
+	phase_set(OTA_FAILED);
+	source_set(OTA_SRC_NONE);
 	display_notice(NULL, 0);
 }
+
+void ota_end_abort(void)
+{
+	phase_set(OTA_IDLE);
+	source_set(OTA_SRC_NONE);
+	display_notice(NULL, 0);
+}
+
 
 static enum mgmt_cb_return ota_dfu_cb(uint32_t event,
 				      enum mgmt_cb_return prev_status,
@@ -309,15 +401,18 @@ static enum mgmt_cb_return ota_dfu_cb(uint32_t event,
 	 * "something is happening" and that's what they get. */
 	switch (event) {
 	case MGMT_EVT_OP_IMG_MGMT_DFU_STARTED:
-		ota_enter_safe_state("BLE OTA");
+		(void)ota_begin(OTA_SRC_BLE, "BLE OTA");
 		break;
 
 	case MGMT_EVT_OP_IMG_MGMT_DFU_PENDING:
+		ota_mark_start();   /* host's next request will set the test trailer */
 		display_notice("BLE OTA done", 8000);
 		break;
 
 	case MGMT_EVT_OP_IMG_MGMT_DFU_STOPPED:
-		ota_exit_safe_state();
+		ota_end_abort();   /* upload terminated (success path: host
+				    * sends OS reset shortly; failure path: just
+				    * leave us at IDLE) */
 		break;
 
 	default:

@@ -43,10 +43,42 @@ bool ota_test_pending(void);
  * status`. */
 int ota_pending_swap_type(void);
 
-/* True while a BLE mcumgr-SMP image upload is in flight (between
- * DFU_STARTED and DFU_STOPPED/DFU_PENDING events). Used by logctl to
- * inhibit the auto-sleep timer so the device doesn't drop into LS_IDLE
- * mid-upload. Safe to call from any context. */
+/* Unified OTA pipeline phases. Both BLE-mcumgr and SD-card update
+ * paths feed into the same state machine so the rest of the device
+ * (logctl, display, cli) sees one consistent view of "is an OTA
+ * happening, what stage, where did it come from".
+ *
+ *   IDLE         no OTA underway
+ *   PREPARING    stopping the logger, getting ready
+ *   TRANSFERRING bytes flowing into slot 1
+ *   MARKING      upload done, writing the test trailer
+ *   REBOOTING    boot_request_upgrade done, sys_reboot pending
+ *   FAILED       last OTA aborted; transient -- reset to IDLE on next begin
+ */
+enum ota_phase {
+	OTA_IDLE = 0,
+	OTA_PREPARING,
+	OTA_TRANSFERRING,
+	OTA_MARKING,
+	OTA_REBOOTING,
+	OTA_FAILED,
+};
+
+enum ota_source {
+	OTA_SRC_NONE = 0,
+	OTA_SRC_BLE,
+	OTA_SRC_SD,
+};
+
+/* Current pipeline state. Safe to call from any context. */
+enum ota_phase  ota_phase_get(void);
+enum ota_source ota_source_get(void);
+const char     *ota_phase_name(enum ota_phase p);
+const char     *ota_source_name(enum ota_source s);
+
+/* True iff phase != IDLE/FAILED. Used by logctl to inhibit auto-sleep,
+ * by other subsystems to detect "device is busy doing OTA, don't
+ * interfere". */
 bool ota_in_progress(void);
 
 /* Initializes the mcumgr DFU callback so the BLE OTA path drives the
@@ -54,18 +86,22 @@ bool ota_in_progress(void);
  * flag for logctl. Idempotent. */
 void ota_dfu_hooks_init(void);
 
-/* Put the device into a known-safe state for OTA: stop logging (closes
- * the TDMS file cleanly so the current session isn't truncated by the
- * impending flash writes / reboot), set the in-progress flag, show the
- * display banner. Called from both update paths -- BLE via the DFU
- * notification on DFU_STARTED, SD via ota_apply_from_sd before
- * touching the secondary slot. */
-void ota_enter_safe_state(const char *banner);
-
-/* Clears the in-progress flag and the display banner. Called on
- * DFU_STOPPED in the BLE path. SD path reboots on success so the exit
- * is implicit. Does NOT auto-resume logging -- the user can `pwr log`
- * (or rely on the post-OTA-boot autostart-skip logic) themselves. */
-void ota_exit_safe_state(void);
+/* Unified state-machine entry points. Both BLE-mcumgr and SD-card OTA
+ * paths drive the same transitions so the device sees one consistent
+ * view of "is OTA happening, what stage, where did it come from".
+ *
+ * ota_begin(): refuse if another OTA already in flight; otherwise
+ *   PREPARING -> stop logger -> TRANSFERRING. Returns -EBUSY if blocked.
+ * ota_mark_start():    upload finished; about to write test trailer
+ * ota_reboot_start():  trailer written; about to sys_reboot
+ * ota_end_failure():   any step failed; goes to FAILED then idle
+ * ota_end_abort():     transport ended without success or failure
+ *                      (e.g. host disconnected mid-upload); goes to IDLE
+ */
+int  ota_begin(enum ota_source src, const char *banner);
+void ota_mark_start(void);
+void ota_reboot_start(void);
+void ota_end_failure(void);
+void ota_end_abort(void);
 
 #endif /* OTA_H_ */
