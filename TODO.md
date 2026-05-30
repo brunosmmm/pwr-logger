@@ -3,34 +3,6 @@
 Tracked items that are real, scoped work but not yet started. Move
 items out of here as commits land; delete when done.
 
-## BLE: ATT MTU regression — rec_slow dropped silently
-
-**Symptom:** `pwrctl monitor` shows `current/voltage/power/temp (INA228)` as
-"—" while fast-channel + battery + state render normally. Started showing up
-around commit `adca56c` (mcumgr SMP transport added).
-
-**Cause:** `rec_slow` is 21 bytes; default ATT MTU is 23 bytes so the
-notification payload limit is 20 bytes. `bt_gatt_notify()` returns
-`-EMSGSIZE`; `ble_stream_publish_slow`'s caller in `logger.c:128`
-discards the return value so the failure is invisible from device side.
-`rec_fast` (15 B) and `rec_status` (8 B) still fit and render fine.
-
-**Fix options:**
-
-1. Anchor the ATT MTU explicitly in `prj.conf`:
-   ```kconfig
-   CONFIG_BT_ATT_PREALLOC_BUFFERS=y
-   CONFIG_BT_ATT_MAX_MTU=247
-   ```
-   Costs a bit of RAM for the pre-allocated buffers; cheapest.
-
-2. Have the device initiate the MTU exchange in the `connected` callback
-   via `bt_gatt_exchange_mtu()` so we don't depend on the central doing
-   it before the first slow notify. More robust but ~15 lines of code.
-
-Option (1) first; if MTU exchange still races on some centrals, layer (2)
-on top.
-
 ## BLE offload: pull TDMS sessions over the air (untethered case)
 
 **Use case:** quick capture when there's no USB host nearby. USB pwrdl

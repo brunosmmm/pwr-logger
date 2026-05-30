@@ -51,12 +51,18 @@ struct __packed rec_fast {
 
 struct __packed rec_slow {
 	uint8_t  tag;
-	uint32_t t_ms;
 	float    vbus_v;    /* INA228 bus (load) voltage */
 	float    i_a;       /* INA228 current (precision) */
 	float    p_w;
 	float    temp_c;
 };
+/* Size = 17 bytes -- fits in the default-MTU notify payload cap of 20
+ * (MTU 23 - 3 ATT overhead). Dropped t_ms: the host monitor only uses
+ * the receive timestamp for its own UI, which is the same to within
+ * the 5 Hz publish cadence, and rec_status carries no time at all.
+ * The slow channel was being silently dropped at default MTU when this
+ * record was 21 B; making it fit lets it work regardless of whether
+ * the central negotiated MTU up. */
 
 struct __packed rec_status {
 	uint8_t  tag;
@@ -287,7 +293,6 @@ int ble_stream_publish_slow(const struct ina228_sample *s)
 
 	r = (struct rec_slow){
 		.tag = TLM_SLOW,
-		.t_ms = (uint32_t)now,
 		.vbus_v = (float)s->vbus_raw * INA228_VBUS_V_LSB,
 		.i_a = (float)s->current_raw * INA228_CURRENT_LSB,
 		.p_w = (float)s->power_raw * 3.2f * INA228_CURRENT_LSB,

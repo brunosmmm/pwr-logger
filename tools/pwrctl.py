@@ -259,8 +259,9 @@ def cmd_monitor():
             del times[:-20]
             hz = (len(times) - 1) / (times[-1] - times[0]) if len(times) > 1 else 0.0
             latest.update(avg=avg, mn=mn, mx=mx, n=n, hz=hz)
-        elif tag == 0x02 and len(d) >= 21:      # SLOW: INA228 real units
-            _, t_ms, vbus, i_a, p_w, temp = struct.unpack("<BIffff", d[:21])
+        elif tag == 0x02 and len(d) >= 17:      # SLOW: INA228 real units
+            # Dropped t_ms (was 21 B, didn't fit default-MTU notify cap).
+            _, vbus, i_a, p_w, temp = struct.unpack("<Bffff", d[:17])
             latest.update(ina_v=vbus, ina_i=i_a, ina_p=p_w, ina_t=temp)
         elif tag == 0x03 and len(d) >= 8:       # STATUS
             _, state, batt, drops = struct.unpack("<BBHI", d[:8])
