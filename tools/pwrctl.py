@@ -499,16 +499,23 @@ def cmd_ota(bin_path, *, confirm_now=False, reset=True, mark_only=False,
             # (read-only, may report a default 23 even when BlueZ has
             # actually negotiated up). The firmware advertises
             # CONFIG_BT_L2CAP_TX_MTU=247 and BlueZ auto-negotiates ATT
-            # MTU on connect, so we trust the link is high-MTU and pick
-            # a per-write size that fits within MTU-3=244 bytes. If
-            # write_gatt_char rejects, we'll see an actual error from
-            # BlueZ rather than fail silently inside our chunk math.
-            # 200 leaves comfortable headroom and stays well within the
-            # 244-byte ceiling regardless of bleak/BlueZ quirks.
-            payload_max = 200
-            # Per-chunk data size: payload_max - 8 (SMP hdr) - ~80 byte
-            # CBOR overhead (image+off+len+sha+bstr-prefix+map-hdr).
-            chunk_size = max(payload_max - 8 - 80, 64)
+            # MTU on connect, so the link is high-MTU regardless of
+            # what bleak reports. Pick a per-write size as large as
+            # safely fits inside MTU-3=244 bytes to minimize per-chunk
+            # round-trip overhead. If BlueZ rejects the write, the
+            # write_gatt_char call will raise instead of failing
+            # silently inside our chunk math.
+            payload_max = 240
+            # Per-chunk data size: payload_max - 8 (SMP hdr) - CBOR
+            # framing overhead. First chunk carries the extra fields
+            # (image=u8, len=u32, sha=32B = ~45B with bstr headers);
+            # subsequent chunks are just {off:u32, data:bstr-N} =
+            # ~15B. Reserve 50B to fit the first chunk and waste a
+            # small amount on the rest. Bumping chunk_size from 112B
+            # (the prior conservative value) to ~180B halves per-chunk
+            # round-trips => ~1.8x upload speedup.
+            chunk_overhead = 50
+            chunk_size = max(payload_max - 8 - chunk_overhead, 64)
             console.print(f"[dim]payload_max={payload_max} chunk={chunk_size}B[/]")
 
             # SMP responses are fragmented across notifications when they
