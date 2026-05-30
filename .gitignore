@@ -6,3 +6,4 @@ __pycache__/
 # Verify-loop campaign artifacts (transient, not source of truth)
 VERIFY_LOOP_PROMPT.md
 VERIFY_RESULTS.md
+/VERSION
