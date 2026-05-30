@@ -88,7 +88,11 @@ static void saadc_evt(nrfx_saadc_evt_t const *evt)
 	}
 }
 
-int acq_init(void)
+/* Channel + IRQ setup is one-time per boot (IRQ_CONNECT is build-time
+ * registration of the static vector). The peripheral itself can be
+ * init/uninit-cycled around acq_start/acq_stop pairs to release the
+ * ~200 µA SAADC bias current when not sampling. */
+static int saadc_chan_setup(void)
 {
 	nrfx_saadc_channel_t ch =
 		NRFX_SAADC_DEFAULT_CHANNEL_SE(NRFX_ANALOG_EXTERNAL_AIN7, 0);
@@ -98,24 +102,35 @@ int acq_init(void)
 	ch.channel_config.reference = NRF_SAADC_REFERENCE_INTERNAL;
 	ch.channel_config.acq_time = NRF_SAADC_ACQTIME_3US; /* required at 200 kSPS */
 
-	IRQ_CONNECT(DT_IRQN(DT_NODELABEL(adc)), DT_IRQ(DT_NODELABEL(adc), priority),
-		    nrfx_isr, nrfx_saadc_irq_handler, 0);
-
 	err = nrfx_saadc_init(NRFX_SAADC_DEFAULT_CONFIG_IRQ_PRIORITY);
 	if (err != 0 && err != -EALREADY) {
-		LOG_ERR("nrfx_saadc_init -> %d", err);
-		return -1;
+		return err;
 	}
 	err = nrfx_saadc_channel_config(&ch);
 	if (err != 0) {
-		LOG_ERR("nrfx_saadc_channel_config -> %d", err);
+		return err;
+	}
+	(void)nrfx_saadc_offset_calibrate(NULL);
+	return 0;
+}
+
+int acq_init(void)
+{
+	IRQ_CONNECT(DT_IRQN(DT_NODELABEL(adc)), DT_IRQ(DT_NODELABEL(adc), priority),
+		    nrfx_isr, nrfx_saadc_irq_handler, 0);
+
+	int err = saadc_chan_setup();
+
+	if (err != 0) {
+		LOG_ERR("saadc init -> %d", err);
 		return -1;
 	}
+	/* Free the peripheral immediately; acq_start re-inits when needed.
+	 * Without this, SAADC sits enabled at ~200 µA from boot until
+	 * the first acq_start (or forever if logging never starts). */
+	nrfx_saadc_uninit();
 
-	/* Calibrate the SAADC's internal offset (blocking; handler NULL). */
-	(void)nrfx_saadc_offset_calibrate(NULL);
-
-	LOG_INF("acq_init: AIN7, 14-bit, %ux oversample -> %u kSPS",
+	LOG_INF("acq_init: AIN7, 14-bit, %ux oversample -> %u kSPS (peripheral suspended)",
 		ACQ_OVERSAMPLE, ACQ_SAMPLE_RATE_HZ / 1000u);
 	return 0;
 }
@@ -125,6 +140,20 @@ int acq_start(void)
 	nrfx_saadc_adv_config_t adv = NRFX_SAADC_DEFAULT_ADV_CONFIG;
 	int16_t *b0, *b1;
 	int err;
+
+	/* TIMER2 backs every sample's timestamp; HFCLK pinned ON while it
+	 * runs (~500-700 µA). Tie its lifecycle to acquisition so the
+	 * IDLE / STOPPED-on-battery paths actually save current. */
+	timebase_start();
+
+	/* Re-init SAADC (acq_init's saadc_chan_setup was followed by an
+	 * uninit to free the ~200 µA bias current). Idempotent. */
+	err = saadc_chan_setup();
+	if (err != 0) {
+		LOG_ERR("saadc re-init -> %d", err);
+		timebase_stop();
+		return -1;
+	}
 
 	adv.internal_timer_cc = SAADC_TIMER_CC;
 	adv.start_on_end = true; /* continuous: re-START on each END */
@@ -163,6 +192,8 @@ int acq_start(void)
 int acq_stop(void)
 {
 	nrfx_saadc_abort();
+	nrfx_saadc_uninit();   /* release ~200 µA peripheral bias */
+	timebase_stop();       /* release HFCLK demand; ~500-700 µA */
 	return 0;
 }
 
@@ -177,30 +208,50 @@ int acq_read_vddh_mv(void)
 	ch.channel_config.reference = NRF_SAADC_REFERENCE_INTERNAL;
 	ch.channel_config.acq_time = NRF_SAADC_ACQTIME_10US;   /* high-Z internal source */
 
+	/* SAADC may be uninited if no acquisition is active (acq_init now
+	 * leaves it suspended to save ~200 µA). Init for this one-shot, then
+	 * tear back down if we were the one who brought it up. */
+	err = nrfx_saadc_init(NRFX_SAADC_DEFAULT_CONFIG_IRQ_PRIORITY);
+	bool we_inited = (err == 0);
+
+	if (err != 0 && err != -EALREADY) {
+		LOG_WRN("vddh: saadc_init -> %d", err);
+		return -1;
+	}
+
 	err = nrfx_saadc_channel_config(&ch);
 	if (err != 0) {
 		LOG_WRN("vddh: channel_config -> %d", err);
-		return -1;
+		goto cleanup;
 	}
 	err = nrfx_saadc_simple_mode_set(BIT(1), NRF_SAADC_RESOLUTION_12BIT,
 					NRF_SAADC_OVERSAMPLE_DISABLED, NULL);
 	if (err != 0) {
 		LOG_WRN("vddh: simple_mode_set -> %d", err);
-		return -1;
+		goto cleanup;
 	}
 	err = nrfx_saadc_buffer_set(&sample, 1);
 	if (err != 0) {
 		LOG_WRN("vddh: buffer_set -> %d", err);
-		return -1;
+		goto cleanup;
 	}
 	err = nrfx_saadc_mode_trigger();   /* blocking (handler == NULL) */
 	if (err != 0) {
 		LOG_WRN("vddh: mode_trigger -> %d", err);
-		return -1;
+		goto cleanup;
 	}
 	if (sample < 0) {
 		sample = 0;
 	}
+	if (we_inited) {
+		nrfx_saadc_uninit();   /* restore suspended state */
+	}
 	/* 12-bit code -> input mV (FS 3.6 V), then x5 to undo VDDHDIV5. */
 	return ((int)sample * 3600 / 4096) * 5;
+
+cleanup:
+	if (we_inited) {
+		nrfx_saadc_uninit();
+	}
+	return -1;
 }

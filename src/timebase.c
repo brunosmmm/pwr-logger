@@ -30,12 +30,29 @@ int timebase_init(void)
 	nrf_timer_task_trigger(MASTER_TIMER, NRF_TIMER_TASK_STOP);
 	nrf_timer_mode_set(MASTER_TIMER, NRF_TIMER_MODE_TIMER);
 	nrf_timer_bit_width_set(MASTER_TIMER, NRF_TIMER_BIT_WIDTH_32);
-	nrf_timer_prescaler_set(MASTER_TIMER, 4); /* 16 MHz / 16 = 1 MHz */
+	nrf_timer_prescaler_set(MASTER_TIMER, 4); /* 16 MHz / 2^4 = 1 MHz */
+	nrf_timer_task_trigger(MASTER_TIMER, NRF_TIMER_TASK_CLEAR);
+
+	LOG_INF("timebase: TIMER2 configured @ %u Hz (stopped)", MASTER_CLOCK_HZ);
+	return 0;
+}
+
+void timebase_start(void)
+{
+	/* Acquisition starting -- reset wrap state to match the fresh
+	 * counter run. The old s_high counted wraps since boot; if we
+	 * stopped/restarted the timer the counter restarts from 0 so we
+	 * need a fresh wrap baseline. */
+	s_last = 0;
+	s_high = 0;
 	nrf_timer_task_trigger(MASTER_TIMER, NRF_TIMER_TASK_CLEAR);
 	nrf_timer_task_trigger(MASTER_TIMER, NRF_TIMER_TASK_START);
+}
 
-	LOG_INF("timebase: TIMER2 free-running @ %u Hz", MASTER_CLOCK_HZ);
-	return 0;
+void timebase_stop(void)
+{
+	/* Acquisition stopping -- release HFCLK demand. */
+	nrf_timer_task_trigger(MASTER_TIMER, NRF_TIMER_TASK_STOP);
 }
 
 uint32_t timebase_now32(void)
