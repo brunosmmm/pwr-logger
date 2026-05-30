@@ -466,7 +466,8 @@ def smp_unpack(buf):
     return op, group, seq, cmd_id, body
 
 
-def cmd_ota(bin_path, *, confirm_now=False, reset=True, mark_only=False):
+def cmd_ota(bin_path, *, confirm_now=False, reset=True, mark_only=False,
+            keep_alive=False, keep_alive_interval=15.0):
     """Push <bin_path> to the device's secondary slot via BLE-SMP, mark for
     swap, optionally reset. Use the existing mcuboot.test/.confirm semantics:
     default = TEST (revert if new image doesn't confirm itself); --confirm-now
@@ -721,6 +722,52 @@ def cmd_ota(bin_path, *, confirm_now=False, reset=True, mark_only=False):
     if rc:
         sys.exit(rc)
 
+    # ---- post-reset keepalive ----
+    # The connection above closed when sys_reboot fired. If the operator
+    # wants to interact with the new image (verify build tag, etc.)
+    # without it dropping to LS_IDLE first, reconnect once it's
+    # re-advertising and start the keepalive loop. Best-effort: if it
+    # doesn't come back in 30 s we give up and let the user drive.
+    if reset and keep_alive:
+        import asyncio as _aio
+
+        async def _post_reset_keepalive():
+            from bleak import BleakClient, BleakScanner
+            console.print(
+                f"[cyan]waiting for device to come back up for keepalive...[/]")
+            deadline = time.monotonic() + 30.0
+            dev = None
+            while time.monotonic() < deadline:
+                dev = await BleakScanner.find_device_by_filter(
+                    lambda d, adv: adv.local_name == "pwr-logger",
+                    timeout=5.0)
+                if dev:
+                    break
+            if not dev:
+                console.print(
+                    "[yellow]device didn't re-advertise within 30 s -- giving up "
+                    "(may already be sleeping, or boot took longer than expected). "
+                    "Run `pwrctl keepalive` manually when it comes back.[/]")
+                return
+            console.print(f"[green]reconnected[/] {dev.address}; "
+                          f"pinging every {keep_alive_interval} s. Ctrl-C to stop.")
+            try:
+                async with BleakClient(dev) as c:
+                    while True:
+                        await c.write_gatt_char(CTRL_UUID,
+                                                bytes([Op.KEEPALIVE]),
+                                                response=False)
+                        console.print(
+                            f"[dim]ping {time.strftime('%H:%M:%S')}[/]")
+                        await _aio.sleep(keep_alive_interval)
+            except (_aio.CancelledError, KeyboardInterrupt):
+                pass
+
+        try:
+            _aio.run(_post_reset_keepalive())
+        except KeyboardInterrupt:
+            pass
+
 
 # --------------------------------------------------------------------------- #
 def main():
@@ -759,6 +806,13 @@ def main():
                     help="skip erase+upload; mark whatever is already in slot 1 "
                          "(diagnostic; use when a prior upload landed but mark "
                          "failed)")
+    op.add_argument("--keep-alive", action="store_true",
+                    help="after the post-OTA reset, reconnect and run the "
+                         "keepalive loop so the swapped image doesn't drop "
+                         "into LS_IDLE before you can interact with it")
+    op.add_argument("--keep-alive-interval", type=float, default=15.0,
+                    help="seconds between keepalive pings (default 15, "
+                         "only with --keep-alive)")
 
     a = ap.parse_args()
 
@@ -770,7 +824,8 @@ def main():
         return
     if a.cmd == "ota":
         cmd_ota(a.bin, confirm_now=a.confirm_now, reset=not a.no_reset,
-                mark_only=a.mark)
+                mark_only=a.mark, keep_alive=a.keep_alive,
+                keep_alive_interval=a.keep_alive_interval)
         return
     if a.ble:
         ble_dispatch(a)
