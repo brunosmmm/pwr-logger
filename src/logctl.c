@@ -320,7 +320,15 @@ static void handle(enum logctl_event ev)
 		to_offload();
 		break;
 	case EV_OFFLOAD_OFF:
-		to_logging();            /* resume logging on offload exit */
+		/* Only transition to LOGGING if we're actually exiting
+		 * OFFLOAD. controls_init posts this event at boot to seed
+		 * the offload switch's resting level into logctl; if we're
+		 * not in OFFLOAD that "exit" is meaningless and the
+		 * unconditional to_logging() call would override the
+		 * post-OTA-boot STOPPED state. */
+		if (s_state == LS_OFFLOAD) {
+			to_logging();
+		}
 		break;
 	case EV_POWEROFF:
 		cancel_pending_idle();
