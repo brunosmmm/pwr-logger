@@ -54,4 +54,18 @@ bool ota_in_progress(void);
  * flag for logctl. Idempotent. */
 void ota_dfu_hooks_init(void);
 
+/* Put the device into a known-safe state for OTA: stop logging (closes
+ * the TDMS file cleanly so the current session isn't truncated by the
+ * impending flash writes / reboot), set the in-progress flag, show the
+ * display banner. Called from both update paths -- BLE via the DFU
+ * notification on DFU_STARTED, SD via ota_apply_from_sd before
+ * touching the secondary slot. */
+void ota_enter_safe_state(const char *banner);
+
+/* Clears the in-progress flag and the display banner. Called on
+ * DFU_STOPPED in the BLE path. SD path reboots on success so the exit
+ * is implicit. Does NOT auto-resume logging -- the user can `pwr log`
+ * (or rely on the post-OTA-boot autostart-skip logic) themselves. */
+void ota_exit_safe_state(void);
+
 #endif /* OTA_H_ */

@@ -41,6 +41,7 @@
 #include "wdt.h"
 #include "display.h"
 #include "clock.h"
+#include "logctl.h"
 
 /* Secondary slot size from devicetree (no runtime overhead). */
 #define OTA_SLOT_SIZE  FIXED_PARTITION_SIZE(slot1_partition)
@@ -74,7 +75,10 @@ int ota_apply_from_sd(ota_progress_cb_t cb, void *user)
 {
 #define REPORT(stage, val)  do { if (cb) cb(stage, (val), user); } while (0)
 
-	ota_show("OTA start");
+	/* Put device in OTA-safe state first: stop logger if running so
+	 * we don't have SD writes racing with our internal flash writes,
+	 * set in_progress flag, show banner. Symmetric with BLE OTA. */
+	ota_enter_safe_state("SD OTA");
 
 	bool we_mounted = (storage_mount() == 0);
 
@@ -257,6 +261,34 @@ bool ota_in_progress(void)
 	return atomic_get(&s_ota_in_progress) != 0;
 }
 
+void ota_enter_safe_state(const char *banner)
+{
+	atomic_set(&s_ota_in_progress, 1);
+	if (banner) {
+		display_notice(banner, 120000);
+	}
+
+	/* If logging, ask logctl to cleanly stop it. Posting an event is
+	 * safe from any context (it's a msgq write). Wait briefly for the
+	 * logctl thread to process it so we don't race with concurrent SD
+	 * writes once the OTA starts touching internal flash. */
+	if (logctl_state() == LS_LOGGING) {
+		logctl_post(EV_LOG_STOP);
+		for (int i = 0; i < 200; i++) {
+			if (logctl_state() != LS_LOGGING) {
+				break;
+			}
+			k_sleep(K_MSEC(10));
+		}
+	}
+}
+
+void ota_exit_safe_state(void)
+{
+	atomic_set(&s_ota_in_progress, 0);
+	display_notice(NULL, 0);
+}
+
 static enum mgmt_cb_return ota_dfu_cb(uint32_t event,
 				      enum mgmt_cb_return prev_status,
 				      int32_t *rc, uint16_t *group,
@@ -277,8 +309,7 @@ static enum mgmt_cb_return ota_dfu_cb(uint32_t event,
 	 * "something is happening" and that's what they get. */
 	switch (event) {
 	case MGMT_EVT_OP_IMG_MGMT_DFU_STARTED:
-		atomic_set(&s_ota_in_progress, 1);
-		display_notice("BLE OTA", 120000);
+		ota_enter_safe_state("BLE OTA");
 		break;
 
 	case MGMT_EVT_OP_IMG_MGMT_DFU_PENDING:
@@ -286,8 +317,7 @@ static enum mgmt_cb_return ota_dfu_cb(uint32_t event,
 		break;
 
 	case MGMT_EVT_OP_IMG_MGMT_DFU_STOPPED:
-		atomic_set(&s_ota_in_progress, 0);
-		display_notice(NULL, 0);
+		ota_exit_safe_state();
 		break;
 
 	default:

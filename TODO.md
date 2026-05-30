@@ -83,6 +83,51 @@ Combined estimate: 4-6x speedup -> 25-40 s for a full image instead of
 ~140 s. Not blocking anything; do when BLE OTA becomes a daily-use
 path rather than an occasional one.
 
+## PM_DEVICE bus suspend: validate it actually lowers sleep current
+
+The LS_IDLE rail-off + i2c0/i2c1/spi2 PM_DEVICE_ACTION_SUSPEND + CNVR
+pull-up release was supposed to plug the mA-level leakage path
+(MCU driving lines into unpowered slaves' ESD diodes -> ground).
+The work landed in commit f44d9c1; running firmware reports being in
+LS_IDLE; current draw still feels too high.
+
+**Verify with a bench supply** (the user's calibration rig is the
+right tool): put device in LS_IDLE with USB disconnected, measure
+battery rail current. Should be sub-mA, ideally <100 uA if the bus
+suspend is real.
+
+If draw is still mA-level, look for:
+- pinctrl-sleep state not actually applied -- the bus drivers may not
+  honor PM_DEVICE_ACTION_SUSPEND on this Zephyr/nRF version. Confirm
+  with a scope on SDA/SCL/SCK after rail drops.
+- Other always-driven GPIOs: status LED (P0.9), button pull-ups
+  (REC/ROTATE/OFFLOAD all have GPIO_PULL_UP -- closed switch on
+  battery rail = 230 uA per).
+- The board's own quiescent path (power LED, charger IC, divider).
+
+If pinctrl-sleep isn't being applied, the manual workaround is to
+explicitly nrf_gpio_cfg_default each switched-rail pin before
+power_rail(false) and reconfigure on wake.
+
+## Architectural: single OTA controller
+
+Partially addressed in commit (this one): both BLE-mcumgr and SD-card
+OTA paths now call ota_enter_safe_state() / ota_exit_safe_state() so
+they share the "stop logger + set flag + show banner" prep.
+
+Still divergent:
+- BLE path: mcumgr owns the upload state machine. We only observe via
+  DFU_STARTED/PENDING/STOPPED callbacks and react.
+- SD path: ota_apply_from_sd is a single monolithic function that
+  drives the whole pipeline directly.
+
+A true unified controller would push BOTH into a single state machine
+(e.g., in logctl or a new ota_ctrl module) that owns: "image source",
+"upload progress", "post-transfer mark + reset", with the two
+transports (BLE chunk, SD file) as plug-in implementations. Larger
+refactor; do when the divergence causes a real bug rather than just
+being architecturally ugly.
+
 ## Notes for both
 
 - File-system access list: gate `fs_mgmt` to `/SD:/` only via the
