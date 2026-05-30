@@ -9,11 +9,49 @@
 
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/device.h>
+#include <zephyr/drivers/gpio.h>
+#include <zephyr/pm/device.h>
 #if defined(CONFIG_POWEROFF)
 #include <zephyr/sys/poweroff.h>
 #endif
 
 LOG_MODULE_REGISTER(logctl, LOG_LEVEL_INF);
+
+/* Switched-rail peripheral bus devices. Suspended before the rail drops
+ * so the bus drivers apply pinctrl-sleep (low-power-enable disconnects
+ * the pads). Otherwise the MCU keeps driving SDA/SCL/SCK/MOSI/CS into
+ * the now-unpowered slaves and current leaks through their ESD diodes
+ * -- the LS_IDLE rail-off was costing mA instead of microamps. */
+static const struct device *const i2c0_dev = DEVICE_DT_GET(DT_NODELABEL(i2c0));
+static const struct device *const i2c1_dev = DEVICE_DT_GET(DT_NODELABEL(i2c1));
+static const struct device *const spi2_dev = DEVICE_DT_GET(DT_NODELABEL(spi2));
+
+/* INA228 CNVR open-drain input has an internal pull-up to MCU VDD.
+ * When INA228 loses power, that pull-up keeps sourcing current through
+ * the chip's ESD clamp. Reconfigure as input-no-pull before rail-off,
+ * restore with pull-up on wake. P1.6 per the board overlay. */
+static const struct gpio_dt_spec cnvr = {
+	.port = DEVICE_DT_GET(DT_NODELABEL(gpio1)),
+	.pin = 6,
+	.dt_flags = GPIO_ACTIVE_LOW | GPIO_PULL_UP,
+};
+
+static void switched_rail_suspend(void)
+{
+	(void)pm_device_action_run(i2c0_dev, PM_DEVICE_ACTION_SUSPEND);
+	(void)pm_device_action_run(i2c1_dev, PM_DEVICE_ACTION_SUSPEND);
+	(void)pm_device_action_run(spi2_dev, PM_DEVICE_ACTION_SUSPEND);
+	(void)gpio_pin_configure_dt(&cnvr, GPIO_INPUT);   /* no pull */
+}
+
+static void switched_rail_resume(void)
+{
+	(void)gpio_pin_configure_dt(&cnvr, GPIO_INPUT | GPIO_PULL_UP);
+	(void)pm_device_action_run(spi2_dev, PM_DEVICE_ACTION_RESUME);
+	(void)pm_device_action_run(i2c1_dev, PM_DEVICE_ACTION_RESUME);
+	(void)pm_device_action_run(i2c0_dev, PM_DEVICE_ACTION_RESUME);
+}
 
 #define EVQ_LEN 8
 
@@ -79,6 +117,7 @@ static void to_logging(void)
 	autooff_cancel();
 	power_rail(true);                /* may be coming from dark idle */
 	if (prev == LS_IDLE) {
+		switched_rail_resume();      /* reverse the IDLE suspend */
 		display_set_powered(true);   /* SSD1306 lost its config when rail cycled */
 	}
 	ble_stream_set_adv(true);
@@ -101,6 +140,10 @@ static void enter_idle_finalize(void)
 	(void)storage_unmount();         /* SD loses power with the rail */
 	ble_stream_set_adv(config_get()->idle_ble);
 	display_set_powered(false);      /* render thread stops before rail cuts */
+	/* Suspend bus drivers BEFORE the rail goes off so their pinctrl-sleep
+	 * state lands (pads disconnected, no pulls). If we cut the rail first
+	 * the pads stay driven into unpowered slaves -> mA leakage. */
+	switched_rail_suspend();
 	power_rail(false);               /* cut INA240/INA228/SD/display */
 	autooff_arm();
 	s_state = LS_IDLE;
@@ -164,6 +207,7 @@ static void wake_idle(void)         /* USB plugged (or REC) -> come back up */
 {
 	autooff_cancel();
 	power_rail(true);
+	switched_rail_resume();          /* reverse the IDLE bus-driver suspend */
 	display_set_powered(true);       /* SSD1306 re-init: rail just came back */
 	ble_stream_set_adv(true);
 	power_batt_sample();
@@ -191,6 +235,7 @@ static void to_offload(void)
 	autooff_cancel();
 	power_rail(true);                /* SD needs the rail (may be idle) */
 	if (prev == LS_IDLE) {
+		switched_rail_resume();      /* reverse the IDLE bus-driver suspend */
 		display_set_powered(true);   /* SSD1306 lost its config when rail cycled */
 	}
 	if (s_state == LS_LOGGING) {
