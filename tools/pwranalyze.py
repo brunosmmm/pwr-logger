@@ -42,14 +42,14 @@ import numpy as np
 try:
     from nptdms import TdmsFile
 except ImportError:
-    sys.exit("missing nptdms -- pip install -r tools/requirements.txt")
+    sys.exit("missing nptdms -- uv sync --extra plot")
 
 try:
     from rich.console import Console
     from rich.panel import Panel
     from rich.table import Table
 except ImportError:
-    sys.exit("missing rich -- pip install -r tools/requirements.txt")
+    sys.exit("missing rich -- uv sync --extra plot")
 
 console = Console()
 

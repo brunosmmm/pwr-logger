@@ -87,11 +87,12 @@ sudo udevadm control --reload && sudo udevadm trigger
 
 ## Host tools
 
-`tools/requirements.txt`:
+Dependencies are managed with [uv](https://docs.astral.sh/uv/) (`pyproject.toml` + `uv.lock`):
 
 ```sh
-python3 -m venv ~/.venvs/pwrlog
-~/.venvs/pwrlog/bin/pip install -r tools/requirements.txt
+uv sync                # create .venv with the core deps
+uv sync --extra plot   # also matplotlib, for `pwranalyze plot` / `fft`
+uv run tools/pwrctl.py --help
 ```
 
 ### `pwrctl.py` — device control + live BLE monitor
@@ -187,7 +188,6 @@ tools/
   pwrdl.py          high-throughput TDMS download (vendor bulk)
   pwranalyze.py     TDMS inspector / stats / plot / FFT
   99-pwrlog.rules   udev rule for non-root vendor-class access
-  requirements.txt  pip dependencies
 ```
 
 ## Deeper docs
