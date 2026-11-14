@@ -104,8 +104,13 @@ def send_cmd(s, cmd, settle=0.4):
     time.sleep(settle)
 
 
-def ls(s, timeout=5.0):
-    """Run `pwr ls` and parse the lines. Returns [(name, size), ...]."""
+def ls(s, timeout=10.0):
+    """Run `pwr ls` and parse the lines. Returns [(name, size), ...].
+
+    Raises RuntimeError if the device never sends its summary line, or marks
+    the listing INCOMPLETE (SD read error) -- a silently short list used to
+    make files look missing and `--record` pick the wrong "newest" file."""
+    wait_for_prompt(s)
     send_cmd(s, "pwr ls")
     deadline = time.monotonic() + timeout
     raw = bytearray()
@@ -113,14 +118,20 @@ def ls(s, timeout=5.0):
         chunk = s.read(1024)
         if chunk:
             raw += chunk
-        if b'files,' in raw:
+        if re.search(rb'\(\d+ files, \d+ bytes\)[^\r\n]*\r?\n', raw):
             break
     text = raw.decode('utf-8', errors='replace')
+    m = re.search(r"\((\d+) files, (\d+) bytes\)([^\r\n]*)", text)
+    if not m:
+        raise RuntimeError("pwr ls: no summary line from device "
+                           f"(got {len(raw)} bytes) -- listing incomplete")
+    if "INCOMPLETE" in m.group(3):
+        raise RuntimeError(f"pwr ls: device reported an incomplete listing{m.group(3)}")
     out = []
     for line in text.splitlines():
-        m = re.match(r"^(\S+\.tdms)\s+(\d+)\s*$", line)
-        if m:
-            out.append((m.group(1), int(m.group(2))))
+        m2 = re.match(r"^(\S+\.tdms)\s+(\d+)\s*$", line)
+        if m2:
+            out.append((m2.group(1), int(m2.group(2))))
     return out
 
 

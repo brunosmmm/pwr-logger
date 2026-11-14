@@ -472,42 +472,101 @@ static void dl_write_u32_le(uint32_t v)
 	dl_write(b, 4);
 }
 
+#define LS_MAX_RETRIES 8
+
 static int cmd_ls(const struct shell *sh, size_t argc, char **argv)
 {
 	ARG_UNUSED(argc); ARG_UNUSED(argv);
 
 	bool we_mounted = (storage_mount() == 0);
 
-	struct fs_dir_t dir;
-	fs_dir_t_init(&dir);
-	int rc = fs_opendir(&dir, "/SD:");
-
-	if (rc != 0) {
-		shell_error(sh, "opendir(/SD:) failed: %d", rc);
-		if (we_mounted) {
-			(void)storage_unmount();
-		}
-		return -1;
-	}
-
+	/*
+	 * While the logger is recording, the SD card is busy with the writer
+	 * thread and a directory read can fail transiently. The old loop treated
+	 * any fs_readdir() error as end-of-directory and silently printed a short
+	 * list (56..258 files for the same card). Now: on error, reopen the dir,
+	 * skip the entries already consumed (directory order is stable) and carry
+	 * on; if it still can't finish, say so in the summary line.
+	 */
 	struct fs_dirent ent;
 	int count = 0;
 	uint64_t total = 0;
+	unsigned int consumed = 0;   /* entries (files + dirs) already seen */
+	int err = 0;
+	int retries = 0;
+	bool done = false;
 
-	while (fs_readdir(&dir, &ent) == 0 && ent.name[0] != '\0') {
-		if (ent.type == FS_DIR_ENTRY_FILE) {
-			shell_print(sh, "%-32s %u", ent.name, (unsigned)ent.size);
-			count++;
-			total += ent.size;
+	while (!done) {
+		struct fs_dir_t dir;
+
+		fs_dir_t_init(&dir);
+		int rc = fs_opendir(&dir, "/SD:");
+
+		if (rc != 0) {
+			err = rc;
+			if (++retries > LS_MAX_RETRIES) {
+				break;
+			}
+			k_msleep(50);
+			continue;
+		}
+
+		bool ok = true;
+
+		for (unsigned int i = 0; i < consumed && ok; i++) {
+			ok = (fs_readdir(&dir, &ent) == 0 && ent.name[0] != '\0');
+		}
+
+		while (ok) {
+			rc = fs_readdir(&dir, &ent);
+			if (rc != 0) {
+				err = rc;
+				ok = false;
+				break;
+			}
+			if (ent.name[0] == '\0') {
+				done = true;
+				break;
+			}
+			consumed++;
+			if (ent.type == FS_DIR_ENTRY_FILE) {
+				shell_print(sh, "%-32s %u", ent.name,
+					    (unsigned)ent.size);
+				count++;
+				total += ent.size;
+			}
+		}
+		(void)fs_closedir(&dir);
+
+		if (!done) {
+			if (ok) {
+				/* resume skip hit EOF early: directory changed under us */
+				err = -ENOENT;
+			}
+			if (++retries > LS_MAX_RETRIES) {
+				break;
+			}
+			k_msleep(50);
 		}
 	}
-	(void)fs_closedir(&dir);
-	shell_print(sh, "(%d files, %llu bytes)", count, (unsigned long long)total);
+
+	if (done) {
+		if (retries) {
+			shell_warn(sh, "ls: recovered after %d retr%s (last rc=%d)",
+				   retries, retries == 1 ? "y" : "ies", err);
+		}
+		shell_print(sh, "(%d files, %llu bytes)", count,
+			    (unsigned long long)total);
+	} else {
+		shell_error(sh, "ls: readdir failed rc=%d after %d entries", err, count);
+		shell_print(sh, "(%d files, %llu bytes) INCOMPLETE rc=%d", count,
+			    (unsigned long long)total, err);
+	}
 
 	if (we_mounted) {
 		(void)storage_unmount();
 	}
-	return 0;
+	return done ? 0 : -EIO;
 }
 
 /* Two ping-pong SD buffers + system-workqueue read worker so the SD-read
@@ -533,11 +592,33 @@ struct dl_read_req {
 
 static struct dl_read_req dl_req;
 
+/* fs_read with retry: while the logger is writing, an SD read can fail
+ * transiently. Rewind to the pre-read offset and try again before giving up. */
+#define DL_READ_RETRIES 5
+
+static ssize_t dl_fs_read(struct fs_file_t *fp, uint8_t *buf, size_t len)
+{
+	off_t pos = fs_tell(fp);
+	ssize_t n = -EIO;
+
+	for (int i = 0; i <= DL_READ_RETRIES; i++) {
+		n = fs_read(fp, buf, len);
+		if (n >= 0 || pos < 0) {
+			return n;
+		}
+		if (fs_seek(fp, pos, FS_SEEK_SET) != 0) {
+			return n;
+		}
+		k_msleep(20);
+	}
+	return n;
+}
+
 static void dl_read_worker(struct k_work *w)
 {
 	struct dl_read_req *r = CONTAINER_OF(w, struct dl_read_req, work);
 
-	r->result = fs_read(r->fp, r->buf, r->to_read);
+	r->result = dl_fs_read(r->fp, r->buf, r->to_read);
 	k_sem_give(&r->done);
 }
 
@@ -596,8 +677,8 @@ static int cmd_download(const struct shell *sh, size_t argc, char **argv)
 	ssize_t n = 0;
 
 	if (remaining > 0) {
-		n = fs_read(&fp, dl_buf[cur],
-			    MIN((size_t)DL_CHUNK, remaining));
+		n = dl_fs_read(&fp, dl_buf[cur],
+			       MIN((size_t)DL_CHUNK, remaining));
 		if (n > 0) {
 			remaining -= (size_t)n;
 		}
@@ -629,6 +710,23 @@ static int cmd_download(const struct shell *sh, size_t argc, char **argv)
 		cur ^= 1;
 	}
 	(void)fs_close(&fp);
+
+	/* If the file could not be read to the end (persistent SD error or
+	 * unexpected EOF), the header already promised ent.size bytes. Pad the
+	 * rest with zeros and corrupt the CRC so the host reports a clear
+	 * "CRC mismatch" immediately instead of stalling until its timeout. */
+	if (remaining > 0) {
+		shell_error(sh, "download: read failed rc=%d, %u of %u bytes unread",
+			    (int)n, (unsigned)remaining, (unsigned)ent.size);
+		memset(dl_buf[0], 0, DL_CHUNK);
+		while (remaining > 0) {
+			size_t z = MIN((size_t)DL_CHUNK, remaining);
+
+			dl_write(dl_buf[0], z);
+			remaining -= z;
+		}
+		crc = ~crc;
+	}
 
 	/* Footer: CRC32 LE. */
 	dl_write_u32_le(crc);

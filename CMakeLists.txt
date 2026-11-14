@@ -65,6 +65,17 @@ project(pwr_logger C)
 
 add_compile_definitions(APP_BUILD_TAG="${APP_GIT_TAG}")
 
+# Guard: FatFs must be thread-safe. FS_FATFS_REENTRANT depends on
+# !FS_FATFS_LFN_MODE_BSS; if a config change reintroduces BSS mode Kconfig drops
+# REENTRANT with only a warning and FatFs silently runs with NO locking
+# (corrupts the card under concurrent shell/logger/display access).
+if(NOT CONFIG_FS_FATFS_REENTRANT)
+    message(FATAL_ERROR
+        "CONFIG_FS_FATFS_REENTRANT is not enabled (check for a Kconfig warning: "
+        "it requires LFN mode STACK or HEAP, not BSS). Refusing to build a "
+        "firmware whose SD filesystem access is not thread-safe.")
+endif()
+
 target_sources(app PRIVATE
     src/main.c
     src/board_init.c
